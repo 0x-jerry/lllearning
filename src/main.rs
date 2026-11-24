@@ -1,11 +1,11 @@
-use gpui_kit::component::{
+use gpui::component::{
     ActiveTheme as _, IconName,
     button::{Button, ButtonVariants as _},
-    h_flex,
     input::{Input, InputEvent, InputState},
-    v_flex,
 };
-use gpui_kit::*;
+use gpui::prelude::*;
+use gpui::*;
+use gpui_rsx::rsx;
 use gpui_webview::WebView;
 
 const HOME: &str = "https://gpui-kit.com/docs/webview";
@@ -70,41 +70,22 @@ impl Focusable for WebViewDemo {
 
 impl Render for WebViewDemo {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        v_flex()
-            .p_2()
-            .gap_3()
-            .size_full()
-            .child(
-                h_flex()
-                    .gap_2()
-                    .items_center()
-                    .child(
-                        Button::new("back")
-                            .ghost()
-                            .icon(IconName::ChevronLeft)
-                            .on_click(cx.listener(Self::go_back)),
-                    )
-                    .child(
-                        Button::new("forward")
-                            .ghost()
-                            .icon(IconName::ChevronRight)
-                            .on_click(cx.listener(Self::go_forward)),
-                    )
-                    .child(
-                        Button::new("reload")
-                            .ghost()
-                            .icon(IconName::Redo)
-                            .on_click(cx.listener(Self::reload)),
-                    )
-                    .child(Input::new(&self.address)),
-            )
-            .child(
-                div()
-                    .flex_1()
-                    .border_1()
-                    .border_color(cx.theme().border)
-                    .child(self.webview.clone()),
-            )
+        rsx! {
+            <div class="flex flex-col gap-[12px] p-[8px] size-full">
+                <div class="flex flex-row gap-[8px] items-center">
+                    <Button("back") ghost icon={IconName::ChevronLeft}
+                        onClick={cx.listener(Self::go_back)} />
+                    <Button("forward") ghost icon={IconName::ChevronRight}
+                        onClick={cx.listener(Self::go_forward)} />
+                    <Button("reload") ghost icon={IconName::Redo}
+                        onClick={cx.listener(Self::reload)} />
+                    <Input(&self.address) />
+                </div>
+                <div class="flex-1 border" border_color={cx.theme().border}>
+                    {self.webview.clone()}
+                </div>
+            </div>
+        }
     }
 }
 
@@ -117,25 +98,19 @@ fn main() {
 
     // WebKitGTK only embeds into X11 windows, so Wayland sessions go through XWayland.
     #[cfg(target_os = "linux")]
-    let app = gpui_kit::platform::linux(WindowingModes::X11);
+    let app = gpui::platform::linux(WindowingModes::X11);
     #[cfg(not(target_os = "linux"))]
-    let app = gpui_kit::application();
+    let app = gpui::application();
 
-    app.with_assets(gpui_kit::assets::Assets).run(|cx| {
-        gpui_kit::init(cx);
+    app.with_assets(gpui::assets::Assets).run(|cx| {
+        gpui::init(cx);
 
         let options = WindowOptions {
-            window_bounds: Some(WindowBounds::centered(
-                None,
-                size(px(800.), px(600.)),
-                cx,
-            )),
+            window_bounds: Some(WindowBounds::centered(None, size(px(800.), px(600.)), cx)),
             ..Default::default()
         };
 
-        gpui_kit::open_window(options, cx, |window, cx| {
-            WebViewDemo::new(window, cx)
-        })
-        .expect("Failed to open window");
+        gpui::open_window(options, cx, |window, cx| WebViewDemo::new(window, cx))
+            .expect("Failed to open window");
     });
 }
