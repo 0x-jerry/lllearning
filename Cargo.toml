@@ -1,0 +1,13 @@
+[package]
+name = "lllearning"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[features]
+inspector = []
+
+[dependencies]
+gpui-kit = { version = "0.11.0", features = ["gpui-fast"] }
+gpui-webview = { version = "0.11.0", features = ["gpui-fast"] }
+wry = { version = "0.53.3", package = "lb-wry" }
