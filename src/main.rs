@@ -124,7 +124,16 @@ fn main() {
     app.with_assets(gpui_kit::assets::Assets).run(|cx| {
         gpui_kit::init(cx);
 
-        gpui_kit::open_window(WindowOptions::default(), cx, |window, cx| {
+        let options = WindowOptions {
+            window_bounds: Some(WindowBounds::centered(
+                None,
+                size(px(800.), px(600.)),
+                cx,
+            )),
+            ..Default::default()
+        };
+
+        gpui_kit::open_window(options, cx, |window, cx| {
             WebViewDemo::new(window, cx)
         })
         .expect("Failed to open window");
