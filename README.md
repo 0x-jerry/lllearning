@@ -20,3 +20,20 @@ imported under the `gpui` alias that `rsx!` expansions expect.
 The toolbar drives navigation: Enter in the address input loads a URL, arrows run
 `history.back`/`history.forward`, reload uses the raw Wry handle. Devtools are on in
 debug builds (right-click → Inspect).
+
+## Tray
+
+`src/tray.rs` adds a `tray-icon` system tray (Windows Shell, macOS NSStatusItem, Linux
+AppIndicator/StatusNotifierItem) with Show / Hide / Quit. Closing the window minimizes
+it instead of exiting, and the app quits only from the tray: `QuitMode::Explicit` plus a
+`on_window_should_close` guard. The tray icon is decoded from `assets/icon.png`.
+
+## Package
+
+```bash
+cargo packager --release
+```
+
+Config lives in `[package.metadata.packager]`; icons are `assets/icon.png` and
+`assets/icon.ico`. On Windows this produces `target/release/lllearning_0.1.0_x64-setup.exe`
+(needs NSIS on `PATH` — cargo-packager downloads it on first run).

@@ -8,6 +8,8 @@ use gpui::*;
 use gpui_rsx::rsx;
 use gpui_webview::WebView;
 
+mod tray;
+
 const HOME: &str = "https://gpui-kit.com/docs/webview";
 
 struct WebViewDemo {
@@ -28,6 +30,7 @@ impl WebViewDemo {
         webview.update(cx, |view, _| view.load_url(HOME));
 
         let address = cx.new(|cx| InputState::new(window, cx).default_value(HOME));
+        tray::keep_window_on_close(window, cx);
 
         cx.new(|cx| {
             cx.subscribe(
@@ -102,15 +105,21 @@ fn main() {
     #[cfg(not(target_os = "linux"))]
     let app = gpui::application();
 
-    app.with_assets(gpui::assets::Assets).run(|cx| {
-        gpui::init(cx);
+    app.with_assets(gpui::assets::Assets)
+        .with_quit_mode(tray::quit_mode())
+        .run(|cx| {
+            gpui::init(cx);
 
-        let options = WindowOptions {
-            window_bounds: Some(WindowBounds::centered(None, size(px(800.), px(600.)), cx)),
-            ..Default::default()
-        };
+            if let Err(error) = tray::Tray::install(cx) {
+                eprintln!("failed to create the tray icon: {error}");
+            }
 
-        gpui::open_window(options, cx, |window, cx| WebViewDemo::new(window, cx))
-            .expect("Failed to open window");
-    });
+            let options = WindowOptions {
+                window_bounds: Some(WindowBounds::centered(None, size(px(800.), px(600.)), cx)),
+                ..Default::default()
+            };
+
+            gpui::open_window(options, cx, |window, cx| WebViewDemo::new(window, cx))
+                .expect("Failed to open window");
+        });
 }
