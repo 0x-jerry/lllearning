@@ -12,10 +12,33 @@ mod tray;
 
 const HOME: &str = "https://gpui-kit.com/docs/webview";
 
-/// A navigation reported by the webview.
-struct PageLoad {
-    url: String,
-    loading: bool,
+/// Prefix the injected script puts in front of the page URL it reports.
+const URL_MESSAGE_PREFIX: &str = "url:";
+
+/// Reports URL changes that load no new document, such as `#anchor` links and
+/// `history.pushState`, which the page load handler never sees.
+const URL_REPORTER_JS: &str = r#"
+(() => {
+  const report = () => window.ipc.postMessage('url:' + location.href);
+  addEventListener('hashchange', report);
+  addEventListener('popstate', report);
+  for (const name of ['pushState', 'replaceState']) {
+    const original = history[name];
+    history[name] = function (...args) {
+      const result = original.apply(this, args);
+      report();
+      return result;
+    };
+  }
+})();
+"#;
+
+/// Something the webview reports about its current page.
+enum WebViewEvent {
+    /// A document started or finished loading at `url`.
+    Load { url: String, loading: bool },
+    /// The page changed its own URL without loading a new document.
+    Url(String),
 }
 
 struct WebViewDemo {
@@ -30,16 +53,23 @@ struct WebViewDemo {
 
 impl WebViewDemo {
     fn new(window: &mut Window, cx: &mut App) -> Entity<Self> {
-        // Page load events arrive on the platform's own callback, so they are
+        // Webview events arrive on the platform's own callback, so they are
         // funnelled through a channel into a foreground task that updates the view.
-        let (load_tx, load_rx) = gpui::base::async_util::unbounded::<PageLoad>();
+        let (event_tx, event_rx) = gpui::base::async_util::unbounded::<WebViewEvent>();
 
         let webview = cx.new(|cx| {
-            let builder =
-                wry::WebViewBuilder::new().with_on_page_load_handler(move |event, url| {
+            let ipc_tx = event_tx.clone();
+            let builder = wry::WebViewBuilder::new()
+                .with_on_page_load_handler(move |event, url| {
                     let loading = matches!(event, wry::PageLoadEvent::Started);
-                    let _ = load_tx.try_send(PageLoad { url, loading });
-                });
+                    let _ = event_tx.try_send(WebViewEvent::Load { url, loading });
+                })
+                .with_ipc_handler(move |request| {
+                    if let Some(url) = request.body().strip_prefix(URL_MESSAGE_PREFIX) {
+                        let _ = ipc_tx.try_send(WebViewEvent::Url(url.to_owned()));
+                    }
+                })
+                .with_initialization_script(URL_REPORTER_JS);
             #[cfg(any(debug_assertions, feature = "inspector"))]
             let builder = builder.with_devtools(true);
 
@@ -67,11 +97,11 @@ impl WebViewDemo {
             )
             .detach();
 
-            let load_rx = load_rx;
+            let event_rx = event_rx;
             cx.spawn(async move |this, cx| {
-                while let Ok(page) = load_rx.recv().await {
+                while let Ok(event) = event_rx.recv().await {
                     if this
-                        .update_in(cx, |this, window, cx| this.page_loaded(page, window, cx))
+                        .update_in(cx, |this, window, cx| this.webview_event(event, window, cx))
                         .is_err()
                     {
                         break;
@@ -97,27 +127,42 @@ impl WebViewDemo {
         }
     }
 
-    /// Reflect a navigation the webview started on its own, such as a link click
-    /// or a redirect, in the toolbar.
-    fn page_loaded(&mut self, page: PageLoad, window: &mut Window, cx: &mut Context<Self>) {
-        self.set_loading(page.loading, cx);
+    /// Reflect what the webview reports in the toolbar.
+    fn webview_event(&mut self, event: WebViewEvent, window: &mut Window, cx: &mut Context<Self>) {
+        let url = match event {
+            WebViewEvent::Load { url, loading } => {
+                // The content is reloading, so follow the event even when the
+                // flag was already set optimistically by the click that started it.
+                if self.loading != loading {
+                    self.loading = loading;
+                    cx.notify();
+                }
+                url
+            }
+            WebViewEvent::Url(url) => url,
+        };
+        self.set_address(url, window, cx);
+    }
 
-        // Leave text the user is still editing alone until they submit or blur.
+    /// Show `url` in the address bar unless the user is editing it.
+    fn set_address(&mut self, url: String, window: &mut Window, cx: &mut Context<Self>) {
         let editing =
             self.address_edited && self.address.read(cx).focus_handle(cx).is_focused(window);
-        if editing || self.address.read(cx).value().as_ref() == page.url {
+        if editing || self.address.read(cx).value().as_ref() == url {
             return;
         }
         self.address
-            .update(cx, |state, cx| state.set_value(page.url, window, cx));
+            .update(cx, |state, cx| state.set_value(url, window, cx));
     }
 
     fn go_back(&mut self, _: &ClickEvent, _: &mut Window, cx: &mut Context<Self>) {
         let _ = self.webview.update(cx, |view, _| view.back());
+        self.set_loading(true, cx);
     }
 
     fn go_forward(&mut self, _: &ClickEvent, _: &mut Window, cx: &mut Context<Self>) {
         let _ = self.webview.update(cx, |view, _| view.forward());
+        self.set_loading(true, cx);
     }
 
     fn reload(&mut self, _: &ClickEvent, _: &mut Window, cx: &mut Context<Self>) {
