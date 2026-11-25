@@ -12,25 +12,33 @@ mod tray;
 
 const HOME: &str = "https://gpui-kit.com/docs/webview";
 
+/// A navigation reported by the webview.
+struct PageLoad {
+    url: String,
+    loading: bool,
+}
+
 struct WebViewDemo {
     focus_handle: FocusHandle,
     webview: Entity<WebView>,
     address: Entity<InputState>,
     /// Whether the webview is currently navigating.
     loading: bool,
+    /// Whether the address bar holds text the user typed but did not submit.
+    address_edited: bool,
 }
 
 impl WebViewDemo {
     fn new(window: &mut Window, cx: &mut App) -> Entity<Self> {
         // Page load events arrive on the platform's own callback, so they are
         // funnelled through a channel into a foreground task that updates the view.
-        let (loading_tx, loading_rx) = gpui::base::async_util::unbounded::<bool>();
+        let (load_tx, load_rx) = gpui::base::async_util::unbounded::<PageLoad>();
 
         let webview = cx.new(|cx| {
             let builder =
-                wry::WebViewBuilder::new().with_on_page_load_handler(move |event, _url| {
+                wry::WebViewBuilder::new().with_on_page_load_handler(move |event, url| {
                     let loading = matches!(event, wry::PageLoadEvent::Started);
-                    let _ = loading_tx.try_send(loading);
+                    let _ = load_tx.try_send(PageLoad { url, loading });
                 });
             #[cfg(any(debug_assertions, feature = "inspector"))]
             let builder = builder.with_devtools(true);
@@ -45,21 +53,25 @@ impl WebViewDemo {
         cx.new(|cx| {
             cx.subscribe(
                 &address,
-                |this: &mut Self, input, event: &InputEvent, cx| {
-                    if let InputEvent::PressEnter { .. } = event {
+                |this: &mut Self, input, event: &InputEvent, cx| match event {
+                    InputEvent::Change => this.address_edited = true,
+                    InputEvent::Blur => this.address_edited = false,
+                    InputEvent::PressEnter { .. } => {
+                        this.address_edited = false;
                         let url = input.read(cx).value();
                         this.webview.update(cx, |view, _| view.load_url(&url));
                         this.set_loading(true, cx);
                     }
+                    _ => {}
                 },
             )
             .detach();
 
-            let loading_rx = loading_rx;
+            let load_rx = load_rx;
             cx.spawn(async move |this, cx| {
-                while let Ok(loading) = loading_rx.recv().await {
+                while let Ok(page) = load_rx.recv().await {
                     if this
-                        .update(cx, |this, cx| this.set_loading(loading, cx))
+                        .update_in(cx, |this, window, cx| this.page_loaded(page, window, cx))
                         .is_err()
                     {
                         break;
@@ -73,6 +85,7 @@ impl WebViewDemo {
                 webview,
                 address,
                 loading: true,
+                address_edited: false,
             }
         })
     }
@@ -82,6 +95,21 @@ impl WebViewDemo {
             self.loading = loading;
             cx.notify();
         }
+    }
+
+    /// Reflect a navigation the webview started on its own, such as a link click
+    /// or a redirect, in the toolbar.
+    fn page_loaded(&mut self, page: PageLoad, window: &mut Window, cx: &mut Context<Self>) {
+        self.set_loading(page.loading, cx);
+
+        // Leave text the user is still editing alone until they submit or blur.
+        let editing =
+            self.address_edited && self.address.read(cx).focus_handle(cx).is_focused(window);
+        if editing || self.address.read(cx).value().as_ref() == page.url {
+            return;
+        }
+        self.address
+            .update(cx, |state, cx| state.set_value(page.url, window, cx));
     }
 
     fn go_back(&mut self, _: &ClickEvent, _: &mut Window, cx: &mut Context<Self>) {
