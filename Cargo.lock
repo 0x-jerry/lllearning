@@ -4468,7 +4468,9 @@ dependencies = [
  "gpui-webview",
  "lb-wry",
  "png 0.18.1",
+ "raw-window-handle",
  "tray-icon",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

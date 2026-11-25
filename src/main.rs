@@ -9,6 +9,7 @@ use gpui_rsx::rsx;
 use gpui_webview::WebView;
 
 mod tray;
+mod window;
 
 /// Shown until the user navigates somewhere, and when they clear the address bar.
 const START_PAGE_HTML: &str = include_str!("../statics/start.html");

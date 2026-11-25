@@ -44,7 +44,9 @@ pub(crate) fn quit_mode() -> QuitMode {
 /// Keeps the window alive on close, so the tray can bring it back.
 pub(crate) fn keep_window_on_close(window: &gpui::Window, cx: &App) {
     window.on_window_should_close(cx, |window, _| {
-        window.minimize_window();
+        // Hide rather than minimize: the app lives in the tray, so it should not
+        // keep a taskbar entry while it has no window on screen.
+        crate::window::hide(window);
         false
     });
 }
@@ -79,14 +81,14 @@ fn forward_menu_events(cx: &App) {
 
 fn on_menu(event: &MenuEvent, cx: &AsyncApp) {
     match event.id.0.as_str() {
-        SHOW => window(cx, |window| window.activate_window()),
-        HIDE => window(cx, |window| window.minimize_window()),
+        SHOW => cx.update(crate::window::show_active),
+        HIDE => window(cx, crate::window::hide),
         QUIT => cx.update(|cx| cx.quit()),
         _ => {}
     }
 }
 
-fn window(cx: &AsyncApp, run: impl FnOnce(&gpui::Window)) {
+fn window(cx: &AsyncApp, run: impl FnOnce(&mut gpui::Window)) {
     cx.update(|cx| {
         let Some(handle) = cx
             .active_window()
