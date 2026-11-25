@@ -1,5 +1,5 @@
 use gpui::component::{
-    ActiveTheme as _, IconName,
+    ActiveTheme as _, Icon, IconName, Sizable as _,
     button::{Button, ButtonVariants as _},
     input::{Input, InputEvent, InputState},
 };
@@ -10,28 +10,23 @@ use gpui_webview::WebView;
 
 mod tray;
 
-const HOME: &str = "https://gpui-kit.com/docs/webview";
+/// Shown until the user navigates somewhere, and when they clear the address bar.
+const START_PAGE_HTML: &str = include_str!("../statics/start.html");
+
+/// The document URL the engines report for the start page.
+const START_PAGE_URL: &str = "about:blank";
+
+/// Whether `url` is the start page rather than a real page.
+fn is_start_page(url: &str) -> bool {
+    url.is_empty() || url == START_PAGE_URL
+}
 
 /// Prefix the injected script puts in front of the page URL it reports.
 const URL_MESSAGE_PREFIX: &str = "url:";
 
 /// Reports URL changes that load no new document, such as `#anchor` links and
 /// `history.pushState`, which the page load handler never sees.
-const URL_REPORTER_JS: &str = r#"
-(() => {
-  const report = () => window.ipc.postMessage('url:' + location.href);
-  addEventListener('hashchange', report);
-  addEventListener('popstate', report);
-  for (const name of ['pushState', 'replaceState']) {
-    const original = history[name];
-    history[name] = function (...args) {
-      const result = original.apply(this, args);
-      report();
-      return result;
-    };
-  }
-})();
-"#;
+const URL_REPORTER_JS: &str = include_str!("../statics/url-reporter.js");
 
 /// Something the webview reports about its current page.
 enum WebViewEvent {
@@ -39,6 +34,41 @@ enum WebViewEvent {
     Load { url: String, loading: bool },
     /// The page changed its own URL without loading a new document.
     Url(String),
+}
+
+/// A navigation that could not be loaded, shown in place of the page.
+struct LoadError {
+    /// What the user asked for, before any URL normalisation.
+    address: String,
+    /// Why the navigation failed.
+    message: String,
+}
+
+/// Turn what the user typed into a URL to navigate to.
+///
+/// A bare host such as `example.com` or `localhost:3000` gets an `https://`
+/// scheme, so it loads instead of failing as an unsupported scheme. Anything
+/// else is passed through unchanged: a real scheme keeps working, and input
+/// that is not a URL at all reaches the webview as typed, where it fails and
+/// the error page takes over.
+fn resolve_address(input: &str) -> String {
+    let input = input.trim();
+    let is_bare_host = !input.contains("://")
+        && input
+            .split(['/', '?', '#'])
+            .next()
+            .is_some_and(|authority| {
+                let host = authority.split(':').next().unwrap_or_default();
+                let mut labels = host.split('.');
+                labels.next().is_some_and(|label| !label.is_empty())
+                    && labels.all(|label| !label.is_empty())
+            });
+
+    if is_bare_host {
+        format!("https://{input}")
+    } else {
+        input.to_owned()
+    }
 }
 
 struct WebViewDemo {
@@ -49,6 +79,10 @@ struct WebViewDemo {
     loading: bool,
     /// Whether the address bar holds text the user typed but did not submit.
     address_edited: bool,
+    /// Set while a failed navigation replaces the page.
+    error: Option<LoadError>,
+    /// Whether the page on screen is the start page, which has no URL to reload.
+    start_page: bool,
 }
 
 impl WebViewDemo {
@@ -75,9 +109,11 @@ impl WebViewDemo {
 
             WebView::build(builder, window, cx).expect("Failed to create WebView")
         });
-        webview.update(cx, |view, _| view.load_url(HOME));
+        webview.update(cx, |view, _| {
+            let _ = view.raw().load_html(START_PAGE_HTML);
+        });
 
-        let address = cx.new(|cx| InputState::new(window, cx).default_value(HOME));
+        let address = cx.new(|cx| InputState::new(window, cx).placeholder("Enter an address"));
         tray::keep_window_on_close(window, cx);
 
         cx.new(|cx| {
@@ -88,9 +124,8 @@ impl WebViewDemo {
                     InputEvent::Blur => this.address_edited = false,
                     InputEvent::PressEnter { .. } => {
                         this.address_edited = false;
-                        let url = input.read(cx).value();
-                        this.webview.update(cx, |view, _| view.load_url(&url));
-                        this.set_loading(true, cx);
+                        let input = input.read(cx).value();
+                        this.navigate(&input, cx);
                     }
                     _ => {}
                 },
@@ -116,6 +151,8 @@ impl WebViewDemo {
                 address,
                 loading: true,
                 address_edited: false,
+                error: None,
+                start_page: true,
             }
         })
     }
@@ -137,11 +174,19 @@ impl WebViewDemo {
                     self.loading = loading;
                     cx.notify();
                 }
+                // A real page replaces the start page; the start page itself is
+                // not a URL, so the address bar stays empty.
+                self.start_page = is_start_page(&url);
                 url
             }
             WebViewEvent::Url(url) => url,
         };
-        self.set_address(url, window, cx);
+        let shown = if is_start_page(&url) {
+            String::new()
+        } else {
+            url
+        };
+        self.set_address(shown, window, cx);
     }
 
     /// Show `url` in the address bar unless the user is editing it.
@@ -155,17 +200,79 @@ impl WebViewDemo {
             .update(cx, |state, cx| state.set_value(url, window, cx));
     }
 
+    /// Navigate to what the user typed. An empty address shows the start page;
+    /// a navigation the webview cannot start at all replaces the page with an
+    /// error view.
+    fn navigate(&mut self, input: &str, cx: &mut Context<Self>) {
+        // Show a stop button straight away rather than waiting for the load event.
+        self.set_loading(true, cx);
+        self.error = None;
+
+        if input.trim().is_empty() {
+            self.show_start_page(cx);
+            return;
+        }
+
+        let url = resolve_address(input);
+        let started = self
+            .webview
+            .read(cx)
+            .raw()
+            .load_url(&url)
+            .map_err(|error| error.to_string());
+        match started {
+            Ok(()) => self.start_page = false,
+            Err(message) => {
+                // The engines report some bad input here and render their own
+                // page for the rest, so a failure means nothing will load.
+                self.error = Some(LoadError {
+                    address: input.trim().to_owned(),
+                    message,
+                });
+                self.set_loading(false, cx);
+            }
+        }
+    }
+
+    /// Replace the page with the built-in start page.
+    fn show_start_page(&mut self, cx: &mut Context<Self>) {
+        let loaded = self
+            .webview
+            .read(cx)
+            .raw()
+            .load_html(START_PAGE_HTML)
+            .map_err(|error| error.to_string());
+        self.start_page = loaded.is_ok();
+        if let Err(message) = loaded {
+            self.error = Some(LoadError {
+                address: String::new(),
+                message,
+            });
+        }
+        self.set_loading(false, cx);
+    }
+
     fn go_back(&mut self, _: &ClickEvent, _: &mut Window, cx: &mut Context<Self>) {
         let _ = self.webview.update(cx, |view, _| view.back());
+        self.error = None;
         self.set_loading(true, cx);
     }
 
     fn go_forward(&mut self, _: &ClickEvent, _: &mut Window, cx: &mut Context<Self>) {
         let _ = self.webview.update(cx, |view, _| view.forward());
+        self.error = None;
         self.set_loading(true, cx);
     }
 
     fn reload(&mut self, _: &ClickEvent, _: &mut Window, cx: &mut Context<Self>) {
+        self.error = None;
+        // The start page is an in-memory document, so it is shown again rather
+        // than reloaded through a URL it does not have.
+        if self.start_page {
+            self.set_loading(true, cx);
+            self.show_start_page(cx);
+            return;
+        }
         let _ = self.webview.read(cx).raw().reload();
         self.set_loading(true, cx);
     }
@@ -210,7 +317,23 @@ impl Render for WebViewDemo {
                     <Input(&self.address) />
                 </div>
                 <div class="flex-1 border" border_color={cx.theme().border}>
-                    {self.webview.clone()}
+                    {if let Some(error) = &self.error {
+                        rsx! {
+                            <div class="flex flex-col gap-[12px] items-center justify-center size-full p-[24px]">
+                                {Icon::new(IconName::TriangleAlert).large()
+                                    .text_color(cx.theme().danger)}
+                                <div class="text-lg font-semibold">{"This page could not be loaded"}</div>
+                                <div class="text-sm" text_color={cx.theme().muted_foreground}>
+                                    {error.address.clone()}
+                                </div>
+                                <div class="text-xs" text_color={cx.theme().muted_foreground}>
+                                    {error.message.clone()}
+                                </div>
+                            </div>
+                        }
+                    } else {
+                        rsx! { <div class="size-full">{self.webview.clone()}</div> }
+                    }}
                 </div>
             </div>
         }
