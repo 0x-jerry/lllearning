@@ -73,7 +73,9 @@ fn resolve_address(input: &str) -> String {
 
 struct WebViewDemo {
     focus_handle: FocusHandle,
-    webview: Entity<WebView>,
+    /// `None` when the webview could not be created, which the window reports
+    /// instead of leaving an empty area behind.
+    webview: Option<Entity<WebView>>,
     address: Entity<InputState>,
     /// Whether the webview is currently navigating.
     loading: bool,
@@ -91,7 +93,7 @@ impl WebViewDemo {
         // funnelled through a channel into a foreground task that updates the view.
         let (event_tx, event_rx) = gpui::base::async_util::unbounded::<WebViewEvent>();
 
-        let webview = cx.new(|cx| {
+        let built = {
             let ipc_tx = event_tx.clone();
             let builder = wry::WebViewBuilder::new()
                 .with_on_page_load_handler(move |event, url| {
@@ -107,11 +109,22 @@ impl WebViewDemo {
             #[cfg(any(debug_assertions, feature = "inspector"))]
             let builder = builder.with_devtools(true);
 
-            WebView::build(builder, window, cx).expect("Failed to create WebView")
-        });
-        webview.update(cx, |view, _| {
-            let _ = view.raw().load_html(START_PAGE_HTML);
-        });
+            WebView::build(builder, window, cx)
+        };
+
+        // WebView2 refuses to start while another instance holds the profile lock,
+        // and reports it as a plain error. Keep the app running with a message in
+        // the window rather than panicking inside the build closure.
+        let webview = match built {
+            Ok(view) => {
+                let _ = view.raw().load_html(START_PAGE_HTML);
+                Some(cx.new(|_| view))
+            }
+            Err(error) => {
+                eprintln!("failed to create the webview: {error}");
+                None
+            }
+        };
 
         let address = cx.new(|cx| InputState::new(window, cx).placeholder("Enter an address"));
         tray::keep_window_on_close(window, cx);
@@ -214,8 +227,10 @@ impl WebViewDemo {
         }
 
         let url = resolve_address(input);
-        let started = self
-            .webview
+        let Some(webview) = &self.webview else {
+            return;
+        };
+        let started = webview
             .read(cx)
             .raw()
             .load_url(&url)
@@ -236,8 +251,10 @@ impl WebViewDemo {
 
     /// Replace the page with the built-in start page.
     fn show_start_page(&mut self, cx: &mut Context<Self>) {
-        let loaded = self
-            .webview
+        let Some(webview) = &self.webview else {
+            return;
+        };
+        let loaded = webview
             .read(cx)
             .raw()
             .load_html(START_PAGE_HTML)
@@ -253,18 +270,27 @@ impl WebViewDemo {
     }
 
     fn go_back(&mut self, _: &ClickEvent, _: &mut Window, cx: &mut Context<Self>) {
-        let _ = self.webview.update(cx, |view, _| view.back());
+        let Some(webview) = &self.webview else {
+            return;
+        };
+        let _ = webview.update(cx, |view, _| view.back());
         self.error = None;
         self.set_loading(true, cx);
     }
 
     fn go_forward(&mut self, _: &ClickEvent, _: &mut Window, cx: &mut Context<Self>) {
-        let _ = self.webview.update(cx, |view, _| view.forward());
+        let Some(webview) = &self.webview else {
+            return;
+        };
+        let _ = webview.update(cx, |view, _| view.forward());
         self.error = None;
         self.set_loading(true, cx);
     }
 
     fn reload(&mut self, _: &ClickEvent, _: &mut Window, cx: &mut Context<Self>) {
+        let Some(webview) = &self.webview else {
+            return;
+        };
         self.error = None;
         // The start page is an in-memory document, so it is shown again rather
         // than reloaded through a URL it does not have.
@@ -273,17 +299,16 @@ impl WebViewDemo {
             self.show_start_page(cx);
             return;
         }
-        let _ = self.webview.read(cx).raw().reload();
+        let _ = webview.read(cx).raw().reload();
         self.set_loading(true, cx);
     }
 
     fn stop(&mut self, _: &ClickEvent, _: &mut Window, cx: &mut Context<Self>) {
+        let Some(webview) = &self.webview else {
+            return;
+        };
         // wry has no stop API; `window.stop()` is supported by both engines.
-        let _ = self
-            .webview
-            .read(cx)
-            .raw()
-            .evaluate_script("window.stop();");
+        let _ = webview.read(cx).raw().evaluate_script("window.stop();");
         self.set_loading(false, cx);
     }
 }
@@ -331,8 +356,21 @@ impl Render for WebViewDemo {
                                 </div>
                             </div>
                         }
+                    } else if let Some(webview) = &self.webview {
+                        rsx! { <div class="size-full">{webview.clone()}</div> }
                     } else {
-                        rsx! { <div class="size-full">{self.webview.clone()}</div> }
+                        // WebView2 would not start, which normally means another
+                        // instance is running and holding the profile lock.
+                        rsx! {
+                            <div class="flex flex-col gap-[12px] items-center justify-center size-full p-[24px]">
+                                {Icon::new(IconName::TriangleAlert).large()
+                                    .text_color(cx.theme().danger)}
+                                <div class="text-lg font-semibold">{"The web view could not start"}</div>
+                                <div class="text-sm" text_color={cx.theme().muted_foreground}>
+                                    {"Close the other window, then reopen the app."}
+                                </div>
+                            </div>
+                        }
                     }}
                 </div>
             </div>
