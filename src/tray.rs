@@ -79,25 +79,13 @@ fn forward_menu_events(cx: &App) {
     .detach();
 }
 
-fn on_menu(event: &MenuEvent, cx: &AsyncApp) {
+fn on_menu(event: &MenuEvent, cx: &mut AsyncApp) {
     match event.id.0.as_str() {
-        SHOW => cx.update(crate::window::show_active),
-        HIDE => window(cx, crate::window::hide),
+        SHOW => crate::window::show_first(cx),
+        HIDE => crate::window::hide_first(cx),
         QUIT => cx.update(|cx| cx.quit()),
         _ => {}
     }
-}
-
-fn window(cx: &AsyncApp, run: impl FnOnce(&mut gpui::Window)) {
-    cx.update(|cx| {
-        let Some(handle) = cx
-            .active_window()
-            .or_else(|| cx.window_stack().and_then(|stack| stack.first().copied()))
-        else {
-            return;
-        };
-        handle.update(cx, |_, window, _| run(window)).ok();
-    });
 }
 
 #[cfg(test)]
