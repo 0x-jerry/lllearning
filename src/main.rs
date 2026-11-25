@@ -16,12 +16,22 @@ struct WebViewDemo {
     focus_handle: FocusHandle,
     webview: Entity<WebView>,
     address: Entity<InputState>,
+    /// Whether the webview is currently navigating.
+    loading: bool,
 }
 
 impl WebViewDemo {
     fn new(window: &mut Window, cx: &mut App) -> Entity<Self> {
+        // Page load events arrive on the platform's own callback, so they are
+        // funnelled through a channel into a foreground task that updates the view.
+        let (loading_tx, loading_rx) = gpui::base::async_util::unbounded::<bool>();
+
         let webview = cx.new(|cx| {
-            let builder = wry::WebViewBuilder::new();
+            let builder =
+                wry::WebViewBuilder::new().with_on_page_load_handler(move |event, _url| {
+                    let loading = matches!(event, wry::PageLoadEvent::Started);
+                    let _ = loading_tx.try_send(loading);
+                });
             #[cfg(any(debug_assertions, feature = "inspector"))]
             let builder = builder.with_devtools(true);
 
@@ -39,17 +49,39 @@ impl WebViewDemo {
                     if let InputEvent::PressEnter { .. } = event {
                         let url = input.read(cx).value();
                         this.webview.update(cx, |view, _| view.load_url(&url));
+                        this.set_loading(true, cx);
                     }
                 },
             )
+            .detach();
+
+            let loading_rx = loading_rx;
+            cx.spawn(async move |this, cx| {
+                while let Ok(loading) = loading_rx.recv().await {
+                    if this
+                        .update(cx, |this, cx| this.set_loading(loading, cx))
+                        .is_err()
+                    {
+                        break;
+                    }
+                }
+            })
             .detach();
 
             Self {
                 focus_handle: cx.focus_handle(),
                 webview,
                 address,
+                loading: true,
             }
         })
+    }
+
+    fn set_loading(&mut self, loading: bool, cx: &mut Context<Self>) {
+        if self.loading != loading {
+            self.loading = loading;
+            cx.notify();
+        }
     }
 
     fn go_back(&mut self, _: &ClickEvent, _: &mut Window, cx: &mut Context<Self>) {
@@ -62,6 +94,17 @@ impl WebViewDemo {
 
     fn reload(&mut self, _: &ClickEvent, _: &mut Window, cx: &mut Context<Self>) {
         let _ = self.webview.read(cx).raw().reload();
+        self.set_loading(true, cx);
+    }
+
+    fn stop(&mut self, _: &ClickEvent, _: &mut Window, cx: &mut Context<Self>) {
+        // wry has no stop API; `window.stop()` is supported by both engines.
+        let _ = self
+            .webview
+            .read(cx)
+            .raw()
+            .evaluate_script("window.stop();");
+        self.set_loading(false, cx);
     }
 }
 
@@ -80,8 +123,17 @@ impl Render for WebViewDemo {
                         onClick={cx.listener(Self::go_back)} />
                     <Button("forward") ghost icon={IconName::ChevronRight}
                         onClick={cx.listener(Self::go_forward)} />
-                    <Button("reload") ghost icon={IconName::Redo}
-                        onClick={cx.listener(Self::reload)} />
+                    {if self.loading {
+                        rsx! {
+                            <Button("stop") ghost icon={IconName::Close}
+                                onClick={cx.listener(Self::stop)} />
+                        }
+                    } else {
+                        rsx! {
+                            <Button("reload") ghost icon={IconName::Redo}
+                                onClick={cx.listener(Self::reload)} />
+                        }
+                    }}
                     <Input(&self.address) />
                 </div>
                 <div class="flex-1 border" border_color={cx.theme().border}>
