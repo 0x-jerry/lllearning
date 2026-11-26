@@ -496,11 +496,25 @@ impl TabGroupRenderer for ShellTabs {
     fn render_active_panel(
         &self,
         panel: gpui::AnyView,
-        _group: &TabGroupContext,
+        group: &TabGroupContext,
         _window: &mut Window,
         _cx: &mut App,
     ) -> AnyElement {
-        panel.into_any_element()
+        if group.is_collapsed() {
+            return Empty.into_any_element();
+        }
+
+        // The panel is positioned absolutely inside a flexible box, which is
+        // what gives it the group's full size and keeps it from painting over
+        // its neighbours: without the box, a panel whose own layout overflows
+        // draws straight through the tab bar and the panes beside it.
+        div()
+            .id("shell-tab-content-panel")
+            .overflow_hidden()
+            .flex_1()
+            .min_h(px(0.))
+            .child(panel.cached(gpui::StyleRefinement::default().absolute().size_full()))
+            .into_any_element()
     }
 }
 

@@ -1,0 +1,11 @@
+# gpui-rsx configuration.
+#
+# The macro defaults to a *pixel* scale, where `p-2` means two pixels. Every
+# class in this app is written the way Tailwind reads -- `p-2` as 8px, `h-6` as
+# 24px -- so the scale is declared here rather than left to the default.
+#
+# Without this, `class="h-6"` produces a six-pixel row: readable, but every
+# spacing decision in the UI is off by a factor of four, which is exactly the
+# kind of thing that looks like a layout bug rather than a units bug.
+[options]
+spacing-scale = "tailwind"

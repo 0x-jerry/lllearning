@@ -175,7 +175,7 @@ impl Render for OutlineView {
         let empty = entries.is_empty();
 
         rsx! {
-            <div class="flex flex-col size-full">
+            <div class="flex flex-col size-full" bg={cx.theme().tokens.sidebar}>
                 <div
                     class="flex flex-row items-center justify-between gap-1 px-2 py-1"
                     border_b_1
@@ -203,11 +203,11 @@ impl Render for OutlineView {
                         }
                     } else {
                         rsx! {
-                            <div class="flex flex-col">
+                            <div class="flex flex-col w-full">
                                 {for entry in entries {
                                     <div
                                         key={format!("{}-{}", entry.depth, entry.label)}
-                                        class="flex flex-row items-center h-6 px-2 text-xs"
+                                        class="flex flex-row items-center w-full h-6 px-2 text-xs overflow-hidden"
                                         pl={px(8. + 12. * entry.depth as f32)}
                                     >
                                         {SharedString::from(entry.label.clone())}
