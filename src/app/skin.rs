@@ -361,16 +361,18 @@ impl TabGroupRenderer for ShellTabs {
         _window: &mut Window,
         cx: &mut App,
     ) -> AnyElement {
-        // A lone panel that carries its own chrome draws no tab bar: the
-        // explorer and the browser both have their own toolbars. A document is
-        // the exception — its tab is where its close button and dirty marker
-        // live, so it asks for a title bar even when it is alone.
-        if group.panels().len() == 1 {
-            let panel = &group.panels()[0];
-            let wants_title = PanelHandle::of(panel).is_none_or(|handle| handle.title_bar(cx));
-            if !wants_title {
-                return Empty.into_any_element();
-            }
+        // A group whose panels all carry their own chrome draws no tab bar. The
+        // side panes are all like that -- the explorer and the browser have
+        // toolbars of their own, and the activity strip beside the dock is how
+        // you pick one -- so a left dock holding both draws nothing here. A
+        // document is the opposite: its tab is where its close button and dirty
+        // marker live, so it asks for a title bar even when it is alone.
+        let wants_title = group
+            .panels()
+            .iter()
+            .any(|panel| PanelHandle::of(panel).is_none_or(|handle| handle.title_bar(cx)));
+        if !wants_title {
+            return Empty.into_any_element();
         }
 
         let active = group.active_ix();
