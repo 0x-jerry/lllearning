@@ -139,23 +139,21 @@ impl AppShell {
     /// reported on stderr before the app goes, because there is no window left
     /// to prompt in by the time this runs (risk R11).
     pub fn install_quit_hook(&mut self, cx: &mut Context<Self>) {
-        let this = cx.weak_entity();
-        let subscription = cx.on_app_quit(move |this_shell, cx| {
-            if let Some(shell) = this.upgrade() {
-                let shell = shell.read(cx);
-                if any_dirty(shell, cx) {
-                    eprintln!(
-                        "quitting with {} unsaved document(s)",
-                        shell
-                            .documents()
-                            .iter()
-                            .filter(|document| document.read(cx).is_dirty(cx))
-                            .count()
-                    );
-                }
-                crate::state::save(&shell.dump_session(cx));
+        // The hook is handed the shell itself. Reading it through a weak handle
+        // would re-enter the very `update` that is running the hook, which panics
+        // with "cannot read AppShell while it is already being updated".
+        let subscription = cx.on_app_quit(|shell: &mut Self, cx| {
+            if any_dirty(shell, cx) {
+                eprintln!(
+                    "quitting with {} unsaved document(s)",
+                    shell
+                        .documents()
+                        .iter()
+                        .filter(|document| document.read(cx).is_dirty(cx))
+                        .count()
+                );
             }
-            let _ = this_shell;
+            crate::state::save(&shell.dump_session(cx));
             async {}
         });
         self._subscriptions.push(subscription);
