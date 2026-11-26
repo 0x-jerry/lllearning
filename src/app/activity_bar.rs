@@ -9,7 +9,7 @@
 //! only reports which id was pressed.
 
 use gpui::component::{
-    Selectable as _, Sizable as _,
+    Selectable as _,
     button::{Button, ButtonVariants as _},
 };
 use gpui::{
@@ -88,22 +88,27 @@ impl ActivityBar {
                 // into each closure rather than moved out of the strip.
                 let on_select = on_select.clone();
 
-                Button::new(SharedString::from(format!(
-                    "activity-{}-{id}",
-                    slot_name(slot)
-                )))
+                let element_id = SharedString::from(format!("activity-{}-{id}", slot_name(slot)));
+
                 // The lucide font is not an SVG asset, so the glyph goes in as a
-                // child element rather than through `Button::icon`.
-                .child(icons::icon(glyph, 16.))
-                .ghost()
-                .small()
-                .tooltip(title)
-                .selected(is_active)
-                .on_click(move |_, window, cx| {
-                    if let Some(handler) = &on_select {
-                        handler(&id_for_click, window, cx);
-                    }
-                })
+                // child element rather than through `Button::icon`. The square is
+                // spelled in `class` because `small` sizes a labelled button, and
+                // its horizontal padding would overflow the 36px strip.
+                rsx! {
+                    <Button(element_id)
+                        ghost
+                        class="size-6 p-0"
+                        tooltip={title}
+                        selected={is_active}
+                        onClick={move |_, window, cx| {
+                            if let Some(handler) = &on_select {
+                                handler(&id_for_click, window, cx);
+                            }
+                        }}
+                    >
+                        {icons::icon(glyph, 16.)}
+                    </Button>
+                }
                 .into_any_element()
             })
             .collect();
