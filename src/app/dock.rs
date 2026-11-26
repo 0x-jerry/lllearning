@@ -18,6 +18,7 @@ use gpui::base::{
         DockArea, DockAreaRenderer, DockContext, DockEvent, DockPlacement, NodeId, PanelId,
         PanelState, PanelView, TabGroupContext, TabGroupRenderer,
     },
+    spring,
 };
 use gpui::component::{
     ActiveTheme as _, Icon, IconName, Selectable as _, Sizable as _,
@@ -327,6 +328,26 @@ impl Element for ResizeTracker {
 struct ShellTabs {
     shared: Rc<SkinShared>,
     scroll: ScrollHandle,
+    /// The tab last brought into view, so the strip moves when the selection
+    /// changes and not on every frame -- otherwise scrolling away from the
+    /// active tab would be undone on the next render. The scroll handlers need
+    /// their own handle, hence the `Rc`.
+    shown: Rc<Cell<Option<usize>>>,
+    /// A tab whose reveal is waiting for the strip to be measured.
+    pending: Cell<Option<usize>>,
+    /// The tab a reveal is travelling to, with where the travel started.
+    reveal: Rc<Cell<Option<Reveal>>>,
+}
+
+/// A tab scrolling into view.
+#[derive(Clone, Copy)]
+struct Reveal {
+    ix: usize,
+    /// Where the strip was when the reveal began, so the spring starts from
+    /// there rather than from wherever a previous one ended.
+    from: gpui::Pixels,
+    /// The offset the last frame set, to notice the user scrolling over it.
+    last: Option<gpui::Pixels>,
 }
 
 impl ShellTabs {
@@ -334,7 +355,80 @@ impl ShellTabs {
         Self {
             shared,
             scroll: ScrollHandle::new(),
+            shown: Rc::new(Cell::new(None)),
+            pending: Cell::new(None),
+            reveal: Rc::new(Cell::new(None)),
         }
+    }
+
+    /// Start a reveal of tab `ix` from where the strip is now.
+    fn start_reveal(&self, ix: usize, to: gpui::Pixels) {
+        let from = self.scroll.offset().x;
+        // A tab already in view leaves the offset where the user put it.
+        self.reveal.set((from != to).then_some(Reveal {
+            ix,
+            from,
+            last: None,
+        }));
+    }
+
+    /// Where the strip should sit to bring tab `ix` fully into view, moving as
+    /// little as possible so a tab already visible is left alone.
+    fn reveal_target(&self, ix: usize) -> Option<gpui::Pixels> {
+        let viewport = self.scroll.bounds();
+        let tab = self.scroll.bounds_for_item(ix)?;
+        let max = self.scroll.max_offset().x;
+        // Child bounds are laid out unscrolled: content at x is on screen at
+        // x + offset, so the visible content spans `viewport - offset`.
+        let mut offset = self.scroll.offset().x;
+        if tab.left() + offset < viewport.left() {
+            offset = viewport.left() - tab.left();
+        }
+        if tab.right() + offset > viewport.right() {
+            offset = viewport.right() - tab.right();
+        }
+        Some(offset.min(gpui::px(0.)).max(-max))
+    }
+
+    /// Step a running reveal by one frame.
+    fn advance(&self, window: &mut Window, cx: &mut App) {
+        let Some(reveal) = self.reveal.get() else {
+            return;
+        };
+        let offset = self.scroll.offset();
+        // A wheel or trackpad scroll since the last frame hands the strip back.
+        if reveal.last.is_some_and(|last| last != offset.x) {
+            self.reveal.set(None);
+            return;
+        }
+
+        let Some(to) = self.reveal_target(reveal.ix) else {
+            self.reveal.set(None);
+            return;
+        };
+        let policy = cx.theme().motion_tokens().spring_move;
+        // A key of its own: `TabBar` animates its own reveal under
+        // "shell-tabs-reveal", and sharing the key would hand one spring's
+        // state to the other.
+        if reveal.last.is_none() {
+            // Pin the spring to where the strip is, or it would start the
+            // travel from wherever the previous reveal ended.
+            spring(
+                "shell-tabs-auto-reveal",
+                reveal.from,
+                policy.with_travel(false),
+                window,
+                cx,
+            );
+        }
+        let x = spring("shell-tabs-auto-reveal", to, policy, window, cx);
+        self.scroll.set_offset(gpui::point(x, offset.y));
+        // The spring asks for the next frame while it is still travelling, so a
+        // reveal needs no notification of its own.
+        self.reveal.set((x != to).then_some(Reveal {
+            last: Some(x),
+            ..reveal
+        }));
     }
 }
 
@@ -357,7 +451,7 @@ impl TabGroupRenderer for ShellTabs {
     fn render_tab_bar(
         &self,
         group: &TabGroupContext,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut App,
     ) -> AnyElement {
         // A group whose panels all carry their own chrome draws no tab bar. The
@@ -443,6 +537,9 @@ impl TabGroupRenderer for ShellTabs {
                 .group_hover(hover_group.clone(), |this| this.visible())
                 .child(close_button);
 
+            // A click lands on a tab the bar already reveals, so claiming it
+            // here keeps this skin's own reveal out of that animation's way.
+            let shown = self.shown.clone();
             tabs.push(
                 Tab::new()
                     .label(title)
@@ -452,12 +549,38 @@ impl TabGroupRenderer for ShellTabs {
                     .pr(px(1.))
                     .when(closable, |this| this.suffix(close_suffix))
                     .on_click(move |_, window, cx| {
+                        shown.set(Some(ix));
                         group_for_select.select_tab(ix, window, cx);
                     }),
             );
         }
 
         let _ = &self.shared;
+
+        // The bar reveals the tab a *click* lands on, but a tab activated from
+        // elsewhere -- a file opened in the explorer, a session restore -- is
+        // selected without any pointer over the strip, so it can end up outside
+        // the visible area.
+        if self.shown.get() != Some(active) {
+            match self.reveal_target(active) {
+                Some(to) => {
+                    self.shown.set(Some(active));
+                    self.pending.set(None);
+                    self.start_reveal(active, to);
+                }
+                // The strip is measured during prepaint, so the first frame has
+                // no bounds to reveal into. One retry is enough to get them;
+                // asking every frame would spin the window on a strip that is
+                // never laid out, such as a collapsed dock's.
+                None if self.pending.get() != Some(active) => {
+                    self.pending.set(Some(active));
+                    let view = window.current_view();
+                    window.on_next_frame(move |_, cx| cx.notify(view));
+                }
+                None => {}
+            }
+        }
+        self.advance(window, cx);
 
         TabBar::new("shell-tabs")
             .underline()
