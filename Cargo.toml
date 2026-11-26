@@ -36,6 +36,9 @@ notify = "8"
 dirs = "6"
 lucide-icons = "1.80"
 ignore = "0.4"
+# File-type glyphs for the explorer, and the nerd font in `assets/` that draws
+# them. lucide has no per-language file icons.
+devicons = "0.6.13"
 
 [target.'cfg(target_os = "windows")'.dependencies]
 windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging"] }

@@ -1,27 +1,42 @@
-//! Lucide glyphs as text.
+//! Icon glyphs as text.
 //!
-//! `lucide-icons` ships the icon set as a font whose glyphs sit at private-use
-//! code points, one per [`Icon`] variant. Drawing an icon is therefore drawing
-//! a one-character string in the `lucide` family — there is no SVG, no asset
-//! pipeline, and no per-icon registration.
+//! Both sets are fonts whose glyphs sit at private-use code points, so drawing
+//! an icon is drawing a one-character string in the right family — there is no
+//! SVG, no asset pipeline, and no per-icon registration.
 //!
-//! The family name is not a constant in the crate; it is read from the TTF's
-//! `name` table, where id 1 (the family) is `lucide`. Renaming it here without
-//! re-checking that table renders tofu, which is why a test reads the table.
+//! `lucide` is the UI's icon set: it has no file types, so the explorer's file
+//! and folder glyphs come from a nerd font instead ([`file_icon`]).
+//!
+//! The family names are not constants in the crates; they are read from the
+//! TTFs' `name` tables, where id 1 is `lucide` and `Symbols Nerd Font Mono`.
+//! Renaming either here without re-checking that table renders tofu, which is
+//! why a test reads both.
 
 use std::borrow::Cow;
 
-use gpui::{App, Div, ParentElement as _, SharedString, Styled as _, div, px};
+use gpui::component::ActiveTheme as _;
+use gpui::{App, Div, Hsla, ParentElement as _, SharedString, Styled as _, div, px, rgb};
+use gpui_rsx::rsx;
 use lucide_icons::{Icon, LUCIDE_FONT_BYTES};
 
-/// The family name from the bundled font's `name` table.
+/// The family name from the bundled lucide font's `name` table.
 pub const LUCIDE_FAMILY: &str = "lucide";
+
+/// The nerd font that draws file-type glyphs, vendored in `assets/`.
+///
+/// It is 1.9 MB and bundled for the same reason lucide is: an icon that depends
+/// on a font the user happens to have installed is an icon that renders as tofu
+/// on the machine you ship to.
+const DEVICONS_FONT_BYTES: &[u8] = include_bytes!("../assets/SymbolsNerdFontMono-Regular.ttf");
+
+/// The family name from that font's `name` table.
+pub const DEVICONS_FAMILY: &str = "Symbols Nerd Font Mono";
 
 /// Whether [`install_font`] has run. The text system is process-global, so this
 /// is too.
 static INSTALLED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
-/// Install the icon font into the text system.
+/// Install the icon fonts into the text system.
 ///
 /// Call once, after [`gpui::init`]. Registering the same font twice is
 /// harmless but wasteful, so this is guarded by a flag.
@@ -29,13 +44,12 @@ pub fn install_font(cx: &mut App) {
     if INSTALLED.swap(true, std::sync::atomic::Ordering::Relaxed) {
         return;
     }
-    if let Err(error) = cx
-        .text_system()
-        .add_fonts(vec![Cow::Borrowed(LUCIDE_FONT_BYTES)])
-    {
-        // A font that fails to load costs every icon in the app, so it is worth
-        // a line on stderr; there is nothing to recover to at startup.
-        eprintln!("failed to install the lucide icon font: {error}");
+    for font in [LUCIDE_FONT_BYTES, DEVICONS_FONT_BYTES] {
+        if let Err(error) = cx.text_system().add_fonts(vec![Cow::Borrowed(font)]) {
+            // A font that fails to load costs every icon in the app, so it is
+            // worth a line on stderr; there is nothing to recover to at startup.
+            eprintln!("failed to install an icon font: {error}");
+        }
     }
 }
 
@@ -45,17 +59,85 @@ pub fn install_font(cx: &mut App) {
 /// differ per icon, and centring inside a fixed square makes the visual rhythm
 /// independent of them.
 pub fn icon(glyph: Icon, size: f32) -> Div {
-    div()
-        .flex()
-        .items_center()
-        .justify_center()
-        .flex_none()
-        .w(px(size))
-        .h(px(size))
-        .font_family(LUCIDE_FAMILY)
-        .text_size(px(size))
-        .line_height(px(size))
-        .child(SharedString::from(char::from(glyph).to_string()))
+    glyph_box(
+        LUCIDE_FAMILY,
+        SharedString::from(char::from(glyph)),
+        size,
+        None,
+    )
+}
+
+/// One glyph centred in a square box, in `family` and tinted `color`.
+///
+/// Every icon in the app is this shape, so the three public helpers are names
+/// for how the glyph and its colour are chosen, not for the layout.
+fn glyph_box(family: &'static str, glyph: SharedString, size: f32, color: Option<Hsla>) -> Div {
+    let el = rsx! {
+        <div
+            class="flex items-center justify-center flex-none"
+            w={px(size)}
+            h={px(size)}
+            font_family={family}
+            text_size={px(size)}
+            line_height={px(size)}
+        >
+            {glyph}
+        </div>
+    };
+    // An untinted icon inherits the text colour of whatever row it sits in.
+    match color {
+        Some(color) => el.text_color(color),
+        None => el,
+    }
+}
+
+/// Draw the glyph for `path` at `size`, tinted the way the file type is
+/// conventionally drawn.
+///
+/// The colour comes from the `devicons` table, which ships a light and a dark
+/// palette; the active theme picks between them.
+pub fn file_icon(path: &std::path::Path, size: f32, cx: &App) -> Div {
+    let theme = if cx.theme().mode.is_dark() {
+        devicons::Theme::Dark
+    } else {
+        devicons::Theme::Light
+    };
+    let glyph = devicons::icon_for_file(path, &Some(theme));
+    glyph_box(
+        DEVICONS_FAMILY,
+        SharedString::from(glyph.icon),
+        size,
+        Some(parse_hex(glyph.color)),
+    )
+}
+
+/// Read `#rrggbb` as an `Hsla`.
+fn parse_hex(hex: &str) -> Hsla {
+    let value = u32::from_str_radix(hex.trim_start_matches('#'), 16).unwrap_or(0x7e8ea8);
+    rgb(value).into()
+}
+
+/// The nerd font's closed and open folder glyphs.
+///
+/// `devicons` names only the open one, and only through the fallback icon its
+/// table returns for a directory; the closed twin sits one code point below,
+/// so both are spelled out here rather than derived from the table.
+const FOLDER_CLOSED: char = '\u{f114}';
+const FOLDER_OPEN: char = '\u{f115}';
+
+/// The folder colour, matching `devicons`' own neutral grey.
+const FOLDER_COLOR: &str = "#7e8ea8";
+
+/// Draw a directory, open or closed: the glyph is the expand/collapse
+/// indicator as well as the row's icon.
+pub fn folder_icon(expanded: bool, size: f32) -> Div {
+    let glyph = if expanded { FOLDER_OPEN } else { FOLDER_CLOSED };
+    glyph_box(
+        DEVICONS_FAMILY,
+        SharedString::from(glyph),
+        size,
+        Some(parse_hex(FOLDER_COLOR)),
+    )
 }
 
 #[cfg(test)]
@@ -73,12 +155,45 @@ mod tests {
     }
 
     #[test]
-    fn the_family_name_matches_the_bundled_font() {
-        // Reads the `name` table directly rather than trusting the constant:
-        // the crate does not export it, so a font upgrade could rename it and
+    fn the_family_names_match_the_bundled_fonts() {
+        // Reads the `name` tables directly rather than trusting the constants:
+        // neither crate exports them, so a font upgrade could rename one and
         // nothing else would notice.
-        let name = ttf_family_name(LUCIDE_FONT_BYTES).expect("the font has a name table");
-        assert_eq!(name, LUCIDE_FAMILY);
+        assert_eq!(
+            ttf_family_name(LUCIDE_FONT_BYTES).expect("the font has a name table"),
+            LUCIDE_FAMILY
+        );
+        assert_eq!(
+            ttf_family_name(DEVICONS_FONT_BYTES).expect("the font has a name table"),
+            DEVICONS_FAMILY
+        );
+    }
+
+    #[test]
+    fn a_known_extension_gets_a_glyph_outside_ascii() {
+        // The default entry is `*`, which draws whether or not the nerd font
+        // loaded; a real extension's glyph is what proves the table was read.
+        let icon = devicons::icon_for_file("src/main.rs", &None);
+        assert!(!icon.icon.is_ascii(), "{:?} is the fallback", icon.icon);
+    }
+
+    #[test]
+    fn the_folder_glyphs_are_not_the_file_fallback() {
+        // Both chevron replacements come from this table, so a rename in a
+        // future `devicons` would silently give every directory a `*`.
+        for path in ["x/", "x"] {
+            let icon = devicons::icon_for_file(path, &None);
+            assert!(!icon.icon.is_ascii(), "{path} fell back to {:?}", icon.icon);
+        }
+    }
+
+    #[test]
+    fn hex_colours_parse_and_fall_back() {
+        assert_eq!(parse_hex("#000000"), rgb(0x000000).into());
+        assert_eq!(parse_hex("#ffffff"), rgb(0xffffff).into());
+        // A malformed colour is the table's problem, not the row's: grey beats
+        // a panic in the middle of a render.
+        assert_eq!(parse_hex("nonsense"), parse_hex("#7e8ea8"));
     }
 
     /// Read the `u16` at `at`, big-endian.

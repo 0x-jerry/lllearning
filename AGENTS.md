@@ -19,7 +19,7 @@ lookup, not a typo.
 ```bash
 cargo check --all-targets          # fast feedback
 cargo build                        # the binary the driver scripts use
-cargo test                         # 63 tests, ~0.3s
+cargo test                         # 66 tests, ~0.3s
 cargo fmt --check
 cargo clippy --all-targets --all-features -- -D warnings
 ```
@@ -51,7 +51,7 @@ src/panes/            side-pane seam: explorer, browser, outline
 src/documents/        document seam: text, markdown, image, video, refused, sniff
 src/workspace/        folder root, lazy tree, notify watcher, fs helpers
 src/state.rs          the session file
-src/icons.rs          lucide glyphs as text
+src/icons.rs          icon glyphs as text: lucide, and the nerd font for file types
 src/tray.rs, window.rs  tray icon and Win32 hide/show (unchanged from the demo)
 ```
 
@@ -261,6 +261,11 @@ The existing code is the style guide. In particular:
   (`changing_the_root_replaces_the_tree`), not as method names.
 - No `unwrap()` in library paths that can fail at runtime; `expect` with a
   reason is fine where a failure is a wiring bug.
+- **Prefer `rsx!` markup wherever it can express the element.** A layout reads
+  as structure in `rsx!` and as a builder chain it does not; use the chain only
+  for what markup cannot say — a runtime `match` around a whole element, a
+  `map` over children, an element handed to a function. `rsx!` expands to the
+  same builder calls at compile time, so this costs nothing.
 
 ## Do not
 

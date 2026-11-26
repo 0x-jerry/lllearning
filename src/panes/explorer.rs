@@ -228,7 +228,7 @@ impl Render for ExplorerView {
     }
 }
 
-/// One tree row: an indent, a chevron for directories, an icon, and the name.
+/// One tree row: an indent, a file-type icon, and the name.
 ///
 /// The click is on the label, not the row, and it stops propagation: the base
 /// tree toggles a directory on any click, so a file's click has to be claimed
@@ -249,17 +249,15 @@ fn row(
     let is_dir = entry.is_folder();
     let expanded = entry.is_expanded();
     let depth = entry.depth();
-    let muted = cx.theme().muted_foreground;
     let foreground = cx.theme().foreground;
 
-    let chevron = if is_dir {
-        if expanded {
-            icons::icon(lucide_icons::Icon::ChevronDown, 12.)
-        } else {
-            icons::icon(lucide_icons::Icon::ChevronRight, 12.)
-        }
+    // A directory's folder glyph doubles as its expand/collapse indicator: the
+    // open and closed folders say the state, so a separate chevron would only
+    // repeat it. A file gets its language's glyph, from the nerd font.
+    let icon = if is_dir {
+        icons::folder_icon(expanded, 14.)
     } else {
-        icons::icon(lucide_icons::Icon::File, 12.)
+        icons::file_icon(&path, 14., cx)
     };
 
     let label = item.label.clone();
@@ -269,7 +267,7 @@ fn row(
     let content = rsx! {
         <div class="flex flex-row items-center gap-1 w-full" h={px(22.)}>
             <div pl={px(4. + 10. * depth as f32)} />
-            <div text_color={muted}>{chevron}</div>
+            {icon}
             <div class="text-xs truncate" text_color={foreground}>{label}</div>
         </div>
     };

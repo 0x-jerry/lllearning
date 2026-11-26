@@ -1330,6 +1330,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "devicons"
+version = "0.6.13"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "777b2f88eb5418ba48f117570ecd0320404da0bdc39c66edf23d4d23550354b7"
+dependencies = [
+ "lazy_static",
+]
+
+[[package]]
 name = "digest"
 version = "0.10.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4473,6 +4482,7 @@ checksum = "4744e383959f0db86ede514b809b1c53251889093803c05267acc7d4e7030d70"
 name = "lllearning"
 version = "0.1.0"
 dependencies = [
+ "devicons",
  "dirs 6.0.0",
  "gpui-kit",
  "gpui-rsx",

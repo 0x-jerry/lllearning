@@ -42,7 +42,7 @@ nothing extra. For an installer, `cargo packager --release` writes
 ## Develop
 
 ```bash
-cargo test                         # 63 tests, ~0.3s
+cargo test                         # 66 tests, ~0.3s
 cargo fmt --check
 cargo clippy --all-targets --all-features -- -D warnings
 ```
@@ -57,7 +57,9 @@ Rust on [GPUI Kit](https://gpui-kit.com), with the UI written in
 `register_*` line, with no edit under `src/app/`.
 
 Editing `assets/icon.svg` means regenerating the rasters with `bun install` then
-`bun run build:icon`.
+`bun run build:icon`. The explorer's file-type icons come from
+[`devicons`](https://github.com/alexpasmantier/rust-devicons), which needs the
+nerd font vendored in `assets/` — it is embedded the same way `lucide.ttf` is.
 
 `AGENTS.md` carries the rest: the traps, the risk register, the session file and
 the `scripts/` UI drivers. Read it before changing code.
