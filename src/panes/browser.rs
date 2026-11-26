@@ -388,6 +388,29 @@ impl BrowserView {
         let shell = self.shell.upgrade()?;
         shell.update(cx, |shell, _| shell.take_browser_request())
     }
+
+    /// Show or hide the native view so it agrees with what the pane draws.
+    ///
+    /// The webview is a child window of the app window, not something GPUI
+    /// paints, so it does not leave the screen when the element placing it does.
+    /// Collapsing the dock, switching tab or drawing an error over it all drop
+    /// the element and leave the page painted at its last bounds (risk R1), so
+    /// the pane hides it by hand and the next layout pass places it again.
+    fn set_webview_visible(&mut self, visible: bool, cx: &mut Context<Self>) {
+        let Some(webview) = &self.webview else {
+            return;
+        };
+        webview.update(cx, |view, _| {
+            if view.visible() == visible {
+                return;
+            }
+            if visible {
+                view.show();
+            } else {
+                view.hide();
+            }
+        });
+    }
 }
 
 impl Focusable for BrowserView {
@@ -414,6 +437,11 @@ impl Render for BrowserView {
         let error = self.error.clone();
         let error_address = self.error_address.clone();
         let webview = self.webview.clone();
+        // Whatever this render decides to draw, the native child window has to
+        // agree with it: an error panel would otherwise have the page drawn on
+        // top of it. Called here rather than from every path that sets `error`
+        // so there is one place that can be wrong.
+        self.set_webview_visible(error.is_none(), cx);
 
         rsx! {
             <div class="flex flex-col size-full">
@@ -499,6 +527,14 @@ impl Render for BrowserView {
 impl gpui::base::dock::Panel for BrowserView {
     fn panel_name(&self) -> &'static str {
         "browser"
+    }
+
+    fn set_active(&mut self, active: bool, _window: &mut Window, cx: &mut Context<Self>) {
+        self.set_webview_visible(active, cx);
+    }
+
+    fn on_removed(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+        self.set_webview_visible(false, cx);
     }
 
     fn dump(&self, _cx: &App) -> gpui::component::dock::PanelState {

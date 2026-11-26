@@ -182,6 +182,7 @@ into a dangling lookup.
 | # | Risk | Mitigation |
 | --- | --- | --- |
 | R1 | **WebView2 covers GPUI overlays** and cannot be clipped to a partial region on Windows. A dialog or dropdown opened over the right dock hides behind the page. | Modal dialogs render at the window root; the browser pane never anchors a dropdown. Documented as a known limitation in `README.md`. |
+| R1b | **The webview is a native child window, so it outlives the element that places it.** Collapsing the dock, switching tab or drawing the pane's error over the page leaves the page painted at its last bounds. | The pane hides and shows the native view itself: `set_active`/`on_removed` from the dock, and every render while an error is on show. Asserted by `scripts/drive-webview-hide.ps1`. |
 | R2 | WebView2 profile lock: a second instance fails to start the webview. | The browser pane shows a "could not start" panel instead of panicking. |
 | R3 | `TreeItem::is_folder()` is `!children.is_empty()`, so an empty directory is not a folder and cannot be expanded. | Give an empty or unreadable directory a disabled placeholder child; skip it when rendering and when resolving clicks (`workspace/tree.rs`). |
 | R4 | **No native video element in GPUI.** | The `video` provider is a placeholder that explains why and offers the browser pane. The seam is unaffected — a real viewer is one provider. |
@@ -209,6 +210,7 @@ pwsh -File scripts/drive-edit.ps1     # open, type, Ctrl+S, report the md5
 pwsh -File scripts/drive-session.ps1  # restart and check the layout came back
 pwsh -File scripts/drive-close.ps1    # dirty close prompt, Save, md5
 pwsh -File scripts/drive-strip.ps1    # a pane button toggles its dock
+pwsh -File scripts/drive-webview-hide.ps1  # the webview leaves with its dock
 ```
 
 Build first, then run them. They assert on file hashes where they can, so a
