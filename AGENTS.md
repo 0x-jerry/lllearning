@@ -46,6 +46,7 @@ src/app/              the shell and its chrome
   documents_view.rs   DocumentsView: the document tabs and the document on show
   activity_bar.rs     the icon strip SideView draws
   title_bar.rs        TitleBar wrapper
+  dialog_window.rs    prompts as their own owned window, reporting an answer back
   status_bar.rs       the footer
   mod.rs              init(): the one place a feature is switched on
 src/panes/            side-pane seam: explorer, browser, outline
@@ -53,7 +54,8 @@ src/documents/        document seam: text, markdown, image, video, refused, snif
 src/workspace/        folder root, lazy tree, notify watcher, fs helpers
 src/state.rs          the session file
 src/icons.rs          icon glyphs as text: lucide, and the nerd font for file types
-src/tray.rs, window.rs  tray icon and Win32 hide/show (unchanged from the demo)
+src/tray.rs           tray icon; hide-on-close
+src/window.rs         Win32 hide/show, and owning a prompt window to its caller
 ```
 
 There is no dock crate in use. The window is two `SideView`s around a
@@ -177,6 +179,20 @@ native child window that does not leave the screen with its element (risk
 R1b), so the hook is what hides it. It is called only on a transition, never
 per frame, so it does not fight the pane's own `Render`.
 
+**A prompt is a window, not a dialog layer.** `window.open_dialog` draws into the
+main window's element tree, where the browser pane's WebView2 child window paints
+over it (risk R1). Use `app::dialog_window::open`, which opens a small window
+owned by the caller and reports the chosen action back through a channel. It
+must be called outside a draw — opening a window paints its first frame before
+it returns, so the shell defers it with `cx.defer_in` — and the returned `Task`
+must be kept, or the prompt has nowhere to send its answer.
+
+**A prompt window is owned on the platform, but nothing makes it follow its
+owner off the screen.** The tray's Hide and the close-to-tray guard take the
+owner away without closing it, so both call `dialog_window::close_for` first.
+A modal prompt also re-shows itself when it becomes visible again: its owner is
+disabled while it is up, so a prompt left minimized behind it would lock the app.
+
 **Side panes are built once and cached in `SideView`.** Rebuilding on every
 switch would recreate the WebView2 — slow, and it re-arms the profile lock (risk
 R2) — and would throw away the explorer's expansion state.
@@ -211,6 +227,8 @@ binding will not reach it. The action is `documents::text::SaveDocument`.
   explains that and offers the browser pane.
 - **A second app instance cannot start the webview** — it holds the WebView2
   profile lock, and the pane says so instead of panicking.
+- **The save prompt is a separate window.** Not a bug, and not a regression from
+  the old in-window dialog: it is the only way to draw over the webview.
 - **A file can open as "Unavailable".** That is `MissingDocument`: the session
   named a path or provider this build cannot rebuild. It keeps the tab rather
   than dropping it.
@@ -241,6 +259,7 @@ into a dangling lookup.
 | R14 | Lucide font glyphs: baseline/centring, and a 1 MB TTF in the binary. | Render icons in a fixed-size flex box; fall back to `gpui_kit::assets::IconName` for a single icon if its metrics look off. |
 | R15 | Tree-sitter grammar features inflate build time and binary size. | Keep the grammar list in `Cargo.toml` minimal; the text viewer must still work when a grammar is missing. |
 | R16 | *(resolved)* The dock held `Arc<dyn PanelView>`; a tab's title and close button only reached the skin through `panel_handle`. | Resolved by removing the dock: panes are plain entities and the shell draws the tabs itself. |
+| R17 | **An in-window dialog is covered by the webview.** `window.open_dialog` draws into the main window's element tree, under the browser pane's native child window — the same cause as R1, which is why R1 alone did not cover it. | Prompts are their own window (`app/dialog_window.rs`), owned by the caller and reporting its answer back. R1 still governs dropdowns and toasts, which have no window of their own. |
 
 ## Verifying UI changes
 

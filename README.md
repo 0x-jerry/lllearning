@@ -18,7 +18,9 @@ The file decides the viewer; there is no mode to pick.
 | binary, or over 8 MiB | An explanation instead of a frozen window |
 
 The tree is read lazily and watched, so changes made outside the app land within
-about half a second. Closing a dirty tab asks Save / Discard / Cancel, and a file
+about half a second. Closing a dirty tab asks Save / Discard / Cancel in its own
+small window — it has to be a window, because the browser pane's page is native
+and paints over anything drawn inside the main one. A file
 changed on disk is flagged rather than written over your buffer. The folder,
 tabs and pane widths survive a restart. Closing the window hides it to the tray;
 Quit is in the tray menu.

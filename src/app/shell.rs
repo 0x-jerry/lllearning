@@ -23,11 +23,10 @@
 //! The dead-code lint cannot see a test-only consumer, so it is allowed on those
 //! items rather than hiding the shell's state behind an incomplete API.
 
-use std::{collections::HashMap, path::PathBuf, rc::Rc};
+use std::{collections::HashMap, path::PathBuf};
 
 use gpui::component::{
     ActiveTheme as _, Sizable as _,
-    button::ButtonVariants as _,
     resizable::{ResizablePanelEvent, ResizableState, h_resizable, resizable_panel},
 };
 use gpui::{
@@ -38,7 +37,12 @@ use gpui::{
 use gpui_rsx::rsx;
 
 use crate::{
-    app::{documents_view::DocumentsView, side_view::SideView, status_bar, title_bar},
+    app::{
+        dialog_window::{self, DialogAction, DialogOptions},
+        documents_view::DocumentsView,
+        side_view::SideView,
+        status_bar, title_bar,
+    },
     documents::DocumentPanel,
     panes::{self, PaneSlot},
     state::{SessionState, SideState},
@@ -92,6 +96,14 @@ impl EventEmitter<()> for AppShell {}
 pub struct ActiveDocumentChanged;
 
 impl EventEmitter<ActiveDocumentChanged> for AppShell {}
+
+/// What the save prompt was answered with.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SaveAnswer {
+    Cancel,
+    Discard,
+    Save,
+}
 
 impl Focusable for AppShell {
     fn focus_handle(&self, _: &App) -> FocusHandle {
@@ -441,73 +453,100 @@ impl AppShell {
     }
 
     /// Ask whether to save, discard or cancel before closing.
+    ///
+    /// The prompt is its own window: an in-window dialog is covered by the
+    /// browser pane's native child window (risk R1). Opening a window inside
+    /// this update would paint the new window's first frame mid-update, so the
+    /// window is opened once this one has finished drawing.
     fn prompt_save_then_close(
         &mut self,
         document: Entity<DocumentPanel>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        use gpui::component::{
-            WindowExt as _,
-            button::Button,
-            dialog::{DialogAction, DialogClose, DialogFooter},
-        };
-
-        let name = fs_util::file_name_of(document.read(cx).path());
-        // The dialog's builder and its callbacks are all `Fn`, so every captured
-        // value is cloned out of the shared state rather than moved.
-        let for_discard = Rc::new(document.clone());
-        let for_save = Rc::new(document);
-        let shell = cx.weak_entity();
-        let shell_for_discard = shell.clone();
-
-        window.open_dialog(cx, move |dialog, _, _| {
-            let discard_document = for_discard.clone();
-            let discard_shell = shell_for_discard.clone();
-            let save_document = for_save.clone();
-            let save_shell = shell.clone();
-            let body =
-                SharedString::from(format!("{name} has unsaved changes. Save before closing?"));
-            let discard = Button::new("discard")
-                .label("Discard")
-                .on_click(move |_, window, cx| {
-                    let document = discard_document.clone();
-                    let _ = discard_shell.update(cx, |shell, cx| {
-                        shell.remove_document(&document, window, cx);
-                    });
-                    window.close_dialog(cx);
-                });
-
-            let footer = rsx! {
-                <DialogFooter base={DialogFooter::new()}>
-                    {DialogClose::new().trigger(|button| button.label("Cancel"))}
-                    {discard}
-                    {DialogAction::new().child(Button::new("save").label("Save").primary())}
-                </DialogFooter>
-            };
-
-            dialog
-                .title(SharedString::from("Unsaved changes"))
-                .child(body)
-                .footer(footer)
-                .on_ok(move |_, window, cx| {
-                    let document = save_document.clone();
-                    let saved =
-                        document.update(cx, |document, cx| document.controller().save(window, cx));
-                    match saved {
-                        Ok(()) => {
-                            let _ = save_shell.update(cx, |shell, cx| {
-                                shell.remove_document(&document, window, cx);
-                            });
-                            true
-                        }
-                        Err(error) => {
-                            eprintln!("{error}");
-                            false
-                        }
-                    }
-                })
+        cx.defer_in(window, move |this, window, cx| {
+            this.show_save_prompt(document, window, cx)
         });
+    }
+
+    fn show_save_prompt(
+        &mut self,
+        document: Entity<DocumentPanel>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let name = fs_util::file_name_of(document.read(cx).path());
+        let options = DialogOptions {
+            title: SharedString::from("Unsaved changes"),
+            message: Some(SharedString::from(format!(
+                "{name} has unsaved changes. Save before closing?"
+            ))),
+            ..Default::default()
+        };
+        let actions = vec![
+            DialogAction {
+                id: "cancel",
+                label: SharedString::from("Cancel"),
+                primary: false,
+                value: SaveAnswer::Cancel,
+            },
+            DialogAction {
+                id: "discard",
+                label: SharedString::from("Discard"),
+                primary: false,
+                value: SaveAnswer::Discard,
+            },
+            DialogAction {
+                id: "save",
+                label: SharedString::from("Save"),
+                primary: true,
+                value: SaveAnswer::Save,
+            },
+        ];
+
+        let answered = dialog_window::open(window, cx, options, actions);
+        // The prompt acts on the owner window — the tree reveal and the editor
+        // focus both need it — so the answer comes back through its handle.
+        let owner = window.window_handle();
+        let shell = cx.weak_entity();
+        cx.spawn_in(window, async move |_, cx| {
+            let Some(answer) = answered.await else {
+                return;
+            };
+            let _ = owner.update(cx, |_, window, cx| {
+                let _ = shell.update(cx, |shell, cx| {
+                    shell.apply_save_answer(answer, &document, window, cx)
+                });
+            });
+        })
+        .detach();
+    }
+
+    /// Do what the save prompt asked for.
+    ///
+    /// A failed save cannot keep the prompt open — it is already gone — so it
+    /// reports in a second window and leaves the document dirty and open.
+    fn apply_save_answer(
+        &mut self,
+        answer: SaveAnswer,
+        document: &Entity<DocumentPanel>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match answer {
+            SaveAnswer::Cancel => {}
+            SaveAnswer::Discard => self.remove_document(document, window, cx),
+            SaveAnswer::Save => {
+                let saved =
+                    document.update(cx, |document, cx| document.controller().save(window, cx));
+                match saved {
+                    Ok(()) => self.remove_document(document, window, cx),
+                    Err(error) => {
+                        dialog_window::alert(window, cx, "Could not save", error);
+                    }
+                }
+            }
+        }
     }
 
     /// Drop a document's tab, and follow whatever the centre now shows.
