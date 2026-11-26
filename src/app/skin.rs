@@ -361,8 +361,10 @@ impl TabGroupRenderer for ShellTabs {
         _window: &mut Window,
         cx: &mut App,
     ) -> AnyElement {
-        // One panel with its own chrome draws no tab bar: the explorer and the
-        // browser both carry their own toolbars.
+        // A lone panel that carries its own chrome draws no tab bar: the
+        // explorer and the browser both have their own toolbars. A document is
+        // the exception — its tab is where its close button and dirty marker
+        // live, so it asks for a title bar even when it is alone.
         if group.panels().len() == 1 {
             let panel = &group.panels()[0];
             let wants_title = PanelHandle::of(panel).is_none_or(|handle| handle.title_bar(cx));
@@ -389,7 +391,13 @@ impl TabGroupRenderer for ShellTabs {
             let title = handle
                 .tab_name(cx)
                 .unwrap_or_else(|| SharedString::from(panel.panel_name(cx)));
-            let closable = group.is_panel_closable(panel_id, cx);
+            // The dock's own gate answers "may this tab be *dragged out*", which
+            // is false for a lone panel — and a document opened on its own is
+            // exactly that. So the close button is offered whenever the panel
+            // itself says it may close, and the shell gets the final say
+            // through the close gate.
+            let closable = handle.closable(cx) && !group.is_collapsed();
+            let _ = group.is_panel_closable(panel_id, cx);
             let group_for_select = group.clone();
             let group_for_close = group.clone();
             let theme = cx.theme();

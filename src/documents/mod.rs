@@ -535,7 +535,10 @@ impl gpui::component::dock::Panel for DocumentPanel {
     }
 
     fn title_bar(&self, _cx: &App) -> bool {
-        false
+        // A document always wants its tab, even as the only one: the tab is the
+        // only place its close button and its dirty marker live. Side panes
+        // answer `false` here because they carry their own toolbars instead.
+        true
     }
 }
 
