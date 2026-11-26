@@ -577,7 +577,8 @@ impl AppShell {
         }
     }
 
-    /// Show a side pane by provider id.
+    /// Show a side pane by provider id, or hide the dock if it is already
+    /// showing it.
     pub fn show_pane(
         &mut self,
         slot: PaneSlot,
@@ -585,6 +586,18 @@ impl AppShell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // Pressing the button of the pane on show means "put that away", which
+        // is the only collapse affordance the strip has.
+        if self.is_dock_open(slot, cx)
+            && self
+                .active_panes
+                .get(&slot)
+                .is_some_and(|id| id == provider_id)
+        {
+            self.toggle_dock(slot, window, cx);
+            return;
+        }
+
         let Some(provider) = panes::pane_by_id(cx, provider_id) else {
             return;
         };
@@ -723,6 +736,11 @@ impl Render for AppShell {
         let dock = self.dock.clone();
         let left_open = self.is_dock_open(PaneSlot::Left, cx);
         let right_open = self.is_dock_open(PaneSlot::Right, cx);
+        // A collapsed dock shows no pane, so its strip must not mark one as
+        // selected -- otherwise the button would read as active while the pane
+        // it names is hidden.
+        let left_shown = left_open.then_some(left_active).flatten();
+        let right_shown = right_open.then_some(right_active).flatten();
 
         // Everything read from the app is resolved into owned values first.
         // The listeners below each need `cx` mutably, and one immutable borrow
@@ -756,23 +774,15 @@ impl Render for AppShell {
         );
         let status = status_bar::render(self, cx);
 
-        let left_strip = ActivityBar::new(PaneSlot::Left, left_active, left_providers)
+        let left_strip = ActivityBar::new(PaneSlot::Left, left_shown, left_providers)
             .on_select(cx.listener(|this, id: &SharedString, window, cx| {
                 this.show_pane(PaneSlot::Left, id, window, cx);
             }))
-            .on_toggle(cx.listener(|this, slot: &PaneSlot, window, cx| {
-                this.toggle_dock(*slot, window, cx);
-            }))
-            .set_open(left_open)
             .render(chrome.border, chrome.sidebar);
-        let right_strip = ActivityBar::new(PaneSlot::Right, right_active, right_providers)
+        let right_strip = ActivityBar::new(PaneSlot::Right, right_shown, right_providers)
             .on_select(cx.listener(|this, id: &SharedString, window, cx| {
                 this.show_pane(PaneSlot::Right, id, window, cx);
             }))
-            .on_toggle(cx.listener(|this, slot: &PaneSlot, window, cx| {
-                this.toggle_dock(*slot, window, cx);
-            }))
-            .set_open(right_open)
             .render(chrome.border, chrome.sidebar);
 
         rsx! {

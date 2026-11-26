@@ -208,6 +208,7 @@ pwsh -File scripts/drive-ui.ps1       # expand a folder, open a file
 pwsh -File scripts/drive-edit.ps1     # open, type, Ctrl+S, report the md5
 pwsh -File scripts/drive-session.ps1  # restart and check the layout came back
 pwsh -File scripts/drive-close.ps1    # dirty close prompt, Save, md5
+pwsh -File scripts/drive-strip.ps1    # a pane button toggles its dock
 ```
 
 Build first, then run them. They assert on file hashes where they can, so a
