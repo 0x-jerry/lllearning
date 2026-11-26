@@ -89,9 +89,20 @@ example.
 2. Implement `DocumentProvider` (`id`, `title`, `score`, `open`) and a
    `DocumentController` for the view (`is_dirty`, `save`, `focus`,
    `reload_from_disk`, `focus_handle`, `is_stale`, `accept_disk_change`, and
-   optionally `mark_stale`, `language`, `cursor`).
+   optionally `mark_stale`, `language`, `cursor`, `outline`, `goto_line`).
 3. One `register_document_provider(cx, Rc::new(MyProvider));` line in
    `documents::register_builtins`.
+
+`open` returns `DocumentContent`, and its `watch` field is how a viewer tells
+panes about its live buffer. A viewer whose contents change under the user must
+supply one — it subscribes to the concrete view and re-broadcasts as
+`DocumentEvent` on the panel. Without it the outline pane only updates when the
+active *document* changes, not when a heading is typed.
+
+`outline` is what the outline pane draws. Answer `None` when the viewer cannot
+outline itself (the pane then says so); `Some(vec![])` means "this viewer
+outlines, and this file has no entries". Only `markdown` answers today. The pane
+knows no syntax — a new outlining viewer needs no edit to it.
 
 `score` returns `Option<u8>`, higher wins, `None` means "cannot open". The
 current table — asserted by tests, so change the tests with it:
@@ -150,6 +161,13 @@ where its close button and dirty marker live.
 
 **`Panel::panel_name` returns `&'static str`.** A persisted name that must round
 trip has to be interned; see `interned_name` in `dock.rs`.
+
+**A pane is built from inside `shell.update`, so it must not read the shell in
+its constructor.** `mount_side_panes` and `show_pane` both call
+`PaneProvider::build` while the shell is leased; reading it there panics with
+"cannot read AppShell while it is already being updated". Subscribe in `new`
+(the `WeakEntity` is safe to hand out) and defer the first read with
+`cx.defer_in`. `panes/outline.rs` is the worked example.
 
 **Editor dirty tracking.** Subscribe to `InputEvent::Change` only. Restore text
 with `EditorState::set_value`, which emits no change event — using

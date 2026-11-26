@@ -20,6 +20,7 @@
 
 pub mod image;
 pub mod markdown;
+pub mod markdown_outline;
 pub mod sniff;
 pub mod text;
 pub mod video;
@@ -32,8 +33,8 @@ use std::{
 
 use gpui::{
     AnyView, App, AppContext as _, Context, Entity, EventEmitter, FocusHandle, Focusable, Global,
-    IntoElement, ParentElement as _, Render, SharedString, Styled as _, WeakEntity, Window,
-    base::dock::PanelEvent, component::dock::BasePanelView, div,
+    IntoElement, ParentElement as _, Render, SharedString, Styled as _, Subscription, WeakEntity,
+    Window, base::dock::PanelEvent, component::dock::BasePanelView, div,
 };
 use serde_json::Value;
 
@@ -75,7 +76,21 @@ impl Sniff {
     }
 }
 
-/// What a provider is handed when it opens a file.
+/// One line of a document's outline.
+///
+/// `line` is 1-based and is what a jump needs; `depth` is what indentation
+/// draws. The pane owns neither the text nor the parse, so both travel here.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OutlineEntry {
+    /// The label, without the syntax that produced it.
+    pub label: String,
+    /// 0 for a top-level entry, 1 for a nested one, and so on.
+    pub depth: usize,
+    /// The 1-based line the entry sits on.
+    pub line: u32,
+}
+
+/// What a viewer is handed when it opens a file.
 pub struct OpenContext {
     /// The path, canonicalised.
     pub path: PathBuf,
@@ -134,12 +149,63 @@ pub trait DocumentController {
         let _ = cx;
         None
     }
+
+    /// The outline of the document's contents, if this viewer has one.
+    ///
+    /// `None` is the answer for every viewer that cannot outline itself, and it
+    /// is what keeps the outline pane from claiming a binary file or a video
+    /// has headings. `Some(vec![])` means "this viewer outlines, and this file
+    /// happens to have no entries" — the pane says so rather than the viewer
+    /// declining.
+    ///
+    /// It lives on the controller rather than the provider because the provider
+    /// is stateless: only the controller holds the live buffer, so only the
+    /// controller can outline what the user has typed but not yet saved.
+    fn outline(&self, cx: &App) -> Option<Vec<OutlineEntry>> {
+        let _ = cx;
+        None
+    }
+
+    /// Move the caret to `line` (1-based), for an outline jump.
+    ///
+    /// The default does nothing, so a viewer that answers [`Self::outline`] but
+    /// does not implement this still shows a usable list.
+    fn goto_line(&self, line: u32, window: &mut Window, cx: &mut App) {
+        let _ = (line, window, cx);
+    }
 }
 
 /// What a provider returns: the view and its controller.
 pub struct DocumentContent {
     pub view: AnyView,
     pub controller: Rc<dyn DocumentController>,
+    /// Subscribes the panel to its viewer's notifications.
+    ///
+    /// A viewer calls `cx.notify()` on itself when its buffer changes, and the
+    /// panes watching the document — the outline, the footer — need to hear
+    /// that. They cannot: [`AnyView`] carries an entity id but GPUI has no
+    /// observe-by-id, so the handle has to be typed, and the only place the
+    /// concrete type is known is the provider that built it.
+    ///
+    /// `None` for a viewer whose contents never change under the user.
+    pub watch: Option<WatchView>,
+}
+
+/// A provider's way to subscribe the panel to its own view.
+///
+/// Called with the panel's context; the hook subscribes to the concrete view
+/// and re-broadcasts its `notify` as [`DocumentEvent`] on the panel.
+pub type WatchView = Box<dyn Fn(&mut Context<DocumentPanel>) -> Subscription>;
+
+impl DocumentContent {
+    /// Content with no live updates: the view is drawn and nothing watches it.
+    pub fn static_content(view: AnyView, controller: Rc<dyn DocumentController>) -> Self {
+        Self {
+            view,
+            controller,
+            watch: None,
+        }
+    }
 }
 
 /// A kind of document viewer.
@@ -286,10 +352,7 @@ pub mod refused {
             let _ = window;
             let controller: Rc<dyn DocumentController> =
                 Rc::new(RefusedController { view: view.clone() });
-            DocumentContent {
-                view: view.into(),
-                controller,
-            }
+            DocumentContent::static_content(view.into(), controller)
         }
     }
 
@@ -415,9 +478,22 @@ pub struct DocumentPanel {
     provider_id: &'static str,
     controller: Rc<dyn DocumentController>,
     view: AnyView,
+    /// Dropped with the panel, so the viewer's notifications stop reaching it.
+    _watch: Option<Subscription>,
 }
 
 impl EventEmitter<PanelEvent> for DocumentPanel {}
+
+/// The panel's own event: its contents changed.
+///
+/// This is what lets a pane watch "whatever the user is editing" without
+/// knowing which viewer is behind it. The panel re-broadcasts its viewer's
+/// `notify` because a subscriber can only subscribe to a type it can name, and
+/// the viewer's type is erased by the time the shell holds it.
+#[derive(Clone, Copy, Debug)]
+pub struct DocumentEvent;
+
+impl EventEmitter<DocumentEvent> for DocumentPanel {}
 
 impl Focusable for DocumentPanel {
     fn focus_handle(&self, cx: &App) -> FocusHandle {
@@ -457,11 +533,17 @@ impl DocumentPanel {
             cx,
         );
 
-        Some(cx.new(|_| Self {
-            path,
-            provider_id,
-            controller: content.controller,
-            view: content.view,
+        Some(cx.new(|cx| {
+            // Built after the panel exists: the provider's hook subscribes to
+            // its own view and hands the subscription back to be held here.
+            let watch = content.watch.as_ref().map(|watch| watch(cx));
+            Self {
+                path,
+                provider_id,
+                controller: content.controller,
+                view: content.view,
+                _watch: watch,
+            }
         }))
     }
 

@@ -29,7 +29,7 @@ use crate::{
     documents::DocumentPanel,
     panes::{self, PaneSlot, ShellHandles},
     state::SessionState,
-    workspace::{Workspace, WorkspaceEvent},
+    workspace::{Workspace, WorkspaceEvent, fs_util},
 };
 
 /// The application shell.
@@ -43,8 +43,12 @@ pub struct AppShell {
     active_panes: HashMap<PaneSlot, String>,
     /// Every document panel currently open, so the shell can drive them.
     documents: Vec<Entity<DocumentPanel>>,
-    /// The document the center is showing, if any.
-    active_document: Option<Entity<DocumentPanel>>,
+    /// The file last revealed in the tree.
+    ///
+    /// `LayoutChanged` also fires for a dragged divider, which must not scroll
+    /// and rebuild the tree on every frame of the drag; this is what makes the
+    /// reveal happen only when the displayed *file* actually changed.
+    revealed: Option<PathBuf>,
     /// A URL the browser pane should load next, put here by a viewer that cannot
     /// play a file itself.
     browser_request: Option<String>,
@@ -55,6 +59,17 @@ pub struct AppShell {
 }
 
 impl EventEmitter<()> for AppShell {}
+
+/// The shell's own event: the document on show changed.
+///
+/// A pane that follows the active document — the outline is the one that does —
+/// subscribes to this rather than re-reading the shell on a timer. The event
+/// carries nothing: the subscriber reads [`AppShell::active_document`], so there
+/// is no second copy of the shell's state to fall out of step.
+#[derive(Clone, Copy, Debug)]
+pub struct ActiveDocumentChanged;
+
+impl EventEmitter<ActiveDocumentChanged> for AppShell {}
 
 impl Focusable for AppShell {
     fn focus_handle(&self, _: &App) -> FocusHandle {
@@ -81,7 +96,7 @@ impl AppShell {
             workspace: workspace.clone(),
             active_panes: HashMap::new(),
             documents: Vec::new(),
-            active_document: None,
+            revealed: None,
             browser_request: None,
             save_task: None,
             _subscriptions: Vec::new(),
@@ -183,8 +198,18 @@ impl AppShell {
     }
 
     /// The document the center is showing.
-    pub fn active_document(&self) -> Option<&Entity<DocumentPanel>> {
-        self.active_document.as_ref()
+    ///
+    /// Resolved from the dock rather than remembered: the dock's own view map is
+    /// the only place that knows every open panel, including the ones a restored
+    /// session rebuilt without the shell ever seeing them.
+    pub fn active_document(&self, cx: &App) -> Option<Entity<DocumentPanel>> {
+        let id = self.active_tab(cx)?;
+        self.dock
+            .read(cx)
+            .panel(id)?
+            .view()
+            .downcast::<DocumentPanel>()
+            .ok()
     }
 
     /// Which provider each side dock is showing.
@@ -200,7 +225,7 @@ impl AppShell {
             window,
             |this: &mut Self, _, event: &DockEvent, window, cx| {
                 if matches!(event, DockEvent::LayoutChanged) {
-                    this.sync_active_document(cx);
+                    this.on_layout_changed(window, cx);
                     // A moved divider, a new tab or a closed tab all land here.
                     this.schedule_session_save(window, cx);
                     cx.notify();
@@ -403,11 +428,13 @@ impl AppShell {
         });
 
         self.documents.push(panel.clone());
-        self.active_document = Some(panel.clone());
         let controller = panel.read(cx).controller().clone();
         controller.focus(window, cx);
-        self.workspace
-            .update(cx, |workspace, cx| workspace.reveal(&canonical, cx));
+        // `add_panel_view` activates the new tab, but a shell that only heard
+        // about it from `LayoutChanged` would reveal the file a frame late. Doing
+        // it here too keeps the tree in step with the tab the user just opened.
+        self.reveal(&canonical, window, cx);
+        cx.emit(ActiveDocumentChanged);
         cx.notify();
     }
 
@@ -427,8 +454,41 @@ impl AppShell {
         // it.
         let controller = document.read(cx).controller().clone();
         controller.focus(window, cx);
-        self.active_document = Some(document.clone());
+        cx.emit(ActiveDocumentChanged);
         cx.notify();
+    }
+
+    /// Follow a dock layout change: the displayed tab may be a different file.
+    fn on_layout_changed(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // A moved divider, a new tab or a closed tab all land here.
+        self.schedule_session_save(window, cx);
+
+        let path = self
+            .active_document(cx)
+            .map(|document| document.read(cx).path().to_path_buf());
+        if let Some(path) = path {
+            self.reveal(&path, window, cx);
+        }
+        cx.emit(ActiveDocumentChanged);
+        cx.notify();
+    }
+
+    /// Show `path` in the explorer's tree, if the tree moved.
+    ///
+    /// Silent about a dock the user has collapsed or switched to another pane:
+    /// the tree is kept in step either way, but revealing is not an excuse to
+    /// reopen a dock someone put away.
+    fn reveal(&mut self, path: &std::path::Path, window: &mut Window, cx: &mut Context<Self>) {
+        if self
+            .revealed
+            .as_deref()
+            .is_some_and(|last| fs_util::same_path(last, path))
+        {
+            return;
+        }
+        self.revealed = Some(path.to_path_buf());
+        self.workspace
+            .update(cx, |workspace, cx| workspace.reveal(path, window, cx));
     }
 
     /// Close one document, prompting if it has unsaved changes.
@@ -537,13 +597,6 @@ impl AppShell {
         });
 
         self.documents.retain(|open| open != document);
-        if self
-            .active_document
-            .as_ref()
-            .is_some_and(|active| active == document)
-        {
-            self.active_document = self.documents.last().cloned();
-        }
         cx.notify();
     }
 
@@ -554,27 +607,9 @@ impl AppShell {
                 dock.remove_panel(document, window, cx);
             });
         }
-        self.active_document = None;
+        self.revealed = None;
+        cx.emit(ActiveDocumentChanged);
         cx.notify();
-    }
-
-    /// Keep `active_document` in step with the dock's selected tab.
-    fn sync_active_document(&mut self, cx: &mut Context<Self>) {
-        let tree = self.dock.read(cx).layout(DockPlacement::Center).cloned();
-        let Some(tree) = tree else {
-            return;
-        };
-        let Some(active_id) = active_panel_in_tree(&tree) else {
-            return;
-        };
-        let found = self
-            .documents
-            .iter()
-            .find(|document| PanelId::from(document.entity_id()) == active_id)
-            .cloned();
-        if let Some(document) = found {
-            self.active_document = Some(document);
-        }
     }
 
     /// Show a side pane by provider id, or hide the dock if it is already

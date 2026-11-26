@@ -21,7 +21,9 @@ use gpui::{
 };
 use gpui_rsx::rsx;
 
-use super::{DocumentContent, DocumentController, DocumentProvider, OpenContext, Sniff, sniff};
+use super::{
+    DocumentContent, DocumentController, DocumentEvent, DocumentProvider, OpenContext, Sniff, sniff,
+};
 
 /// Markdown beats text, and loses to image and video.
 const SCORE: u8 = 70;
@@ -58,9 +60,17 @@ impl DocumentProvider for MarkdownProvider {
         let view = cx.new(|cx| MarkdownView::new(path, editor, cx));
         let controller: Rc<dyn DocumentController> =
             Rc::new(MarkdownController { view: view.clone() });
+        let watched = view.clone();
         DocumentContent {
             view: view.into(),
             controller,
+            watch: Some(Box::new(move |cx| {
+                let watched = watched.clone();
+                cx.subscribe(&watched, |_, _, _: &(), cx| {
+                    cx.emit(DocumentEvent);
+                    cx.notify();
+                })
+            })),
         }
     }
 }
@@ -116,6 +126,25 @@ impl DocumentController for MarkdownController {
         let position = self.view.read(cx).editor.read(cx).cursor_position();
         Some((position.line + 1, position.character + 1))
     }
+
+    fn outline(&self, cx: &App) -> Option<Vec<super::OutlineEntry>> {
+        // Read from the editor, not the file: the outline must follow what the
+        // user has typed, including changes they have not saved yet.
+        let text = self.view.read(cx).editor.read(cx).value();
+        Some(super::markdown_outline::headings(&text))
+    }
+
+    fn goto_line(&self, line: u32, window: &mut Window, cx: &mut App) {
+        self.view.update(cx, |view, cx| {
+            view.editor.update(cx, |editor, cx| {
+                editor.set_cursor_position(
+                    gpui::component::input::Position::new(line.saturating_sub(1), 0),
+                    window,
+                    cx,
+                );
+            });
+        });
+    }
 }
 
 /// How much of the pane the preview takes.
@@ -147,6 +176,9 @@ impl MarkdownView {
         let change = cx.subscribe(&editor, |this: &mut Self, _, event: &InputEvent, cx| {
             if matches!(event, InputEvent::Change) {
                 this.dirty = true;
+                // The panel re-broadcasts this, so a pane showing something
+                // derived from the buffer (the outline) follows the typing.
+                cx.emit(());
                 cx.notify();
             }
         });

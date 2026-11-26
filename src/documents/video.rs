@@ -53,10 +53,7 @@ impl DocumentProvider for VideoProvider {
         let view = cx.new(|cx| VideoView::new(ctx.path, ctx.shell, cx));
         let controller: Rc<dyn DocumentController> =
             Rc::new(VideoController { view: view.clone() });
-        DocumentContent {
-            view: view.into(),
-            controller,
-        }
+        DocumentContent::static_content(view.into(), controller)
     }
 }
 

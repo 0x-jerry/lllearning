@@ -22,7 +22,9 @@ use gpui::{
 };
 use gpui_rsx::rsx;
 
-use super::{DocumentContent, DocumentController, DocumentProvider, OpenContext, Sniff, sniff};
+use super::{
+    DocumentContent, DocumentController, DocumentEvent, DocumentProvider, OpenContext, Sniff, sniff,
+};
 
 /// Scores: high enough that nothing else claims a text file by accident, low
 /// enough that every specific provider beats it.
@@ -86,9 +88,17 @@ impl DocumentProvider for TextProvider {
         let view = cx.new(|cx| TextView::new(path, language, editor, cx));
         let handle = view.clone();
         let controller: Rc<dyn DocumentController> = Rc::new(TextController { view: handle });
+        let watched = view.clone();
         DocumentContent {
             view: view.into(),
             controller,
+            watch: Some(Box::new(move |cx| {
+                let watched = watched.clone();
+                cx.subscribe(&watched, |_, _, _: &(), cx| {
+                    cx.emit(DocumentEvent);
+                    cx.notify();
+                })
+            })),
         }
     }
 }
@@ -176,6 +186,9 @@ impl TextView {
         let change = cx.subscribe(&editor, |this: &mut Self, _, event: &InputEvent, cx| {
             if matches!(event, InputEvent::Change) {
                 this.dirty = true;
+                // The panel re-broadcasts this, so a pane showing something
+                // derived from the buffer (the outline) follows the typing.
+                cx.emit(());
                 cx.notify();
             }
         });

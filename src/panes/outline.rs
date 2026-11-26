@@ -1,11 +1,16 @@
-//! The outline pane: the headings of the active markdown document, or the
-//! symbols of the active code file.
+//! The outline pane: whatever the active document's viewer says its structure
+//! is.
 //!
-//! This pane exists to prove the seam: it is a new module plus one
-//! `register_pane` line, and nothing in `app/shell.rs` or `app/dock.rs` changed to
-//! accommodate it. It reads the active document through the shell and extracts
-//! its outline with plain text scanning — no parser, because an outline that
-//! costs a tree-sitter parse per keystroke is not worth it for a first pass.
+//! This pane knows no syntax. A viewer answers
+//! [`DocumentController::outline`](crate::documents::DocumentController::outline)
+//! and the pane draws the answer, which is why markdown's headings and a future
+//! viewer's symbols are both one method on the viewer rather than a branch here.
+//! A viewer that cannot outline itself answers `None`, and the pane says so
+//! instead of inventing a list from the file's text.
+//!
+//! The pane is a pure function of the shell's active document plus its own
+//! observation of it: it never reads the file from disk, because the viewer's
+//! buffer is the truth and the disk copy may be behind it.
 
 use std::sync::Arc;
 
@@ -14,25 +19,18 @@ use gpui::component::{
     button::{Button, ButtonVariants as _},
 };
 use gpui::{
-    App, AppContext as _, Context, EventEmitter, FocusHandle, Focusable, IntoElement,
-    ParentElement as _, Render, SharedString, Styled as _, Window, div, px,
+    App, AppContext as _, Context, Entity, EventEmitter, FocusHandle, Focusable,
+    InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString,
+    StatefulInteractiveElement as _, Styled as _, Subscription, Window, div, px,
 };
 use gpui_rsx::rsx;
 
 use crate::{
-    app::shell::AppShell,
+    app::shell::{ActiveDocumentChanged, AppShell},
+    documents::{DocumentEvent, DocumentPanel, OutlineEntry},
     icons,
     panes::{PaneContext, PaneProvider, PaneSlot},
 };
-
-/// One line of the outline.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct OutlineEntry {
-    /// The text, without the syntax that produced it.
-    pub label: String,
-    /// 0 for a top-level heading, 1 for a nested one, and so on.
-    pub depth: usize,
-}
 
 /// The outline's provider.
 pub struct OutlinePane;
@@ -70,55 +68,100 @@ impl PaneProvider for OutlinePane {
     }
 }
 
-/// The outline's state.
+/// The outline's state: which document is being shown, and nothing about its
+/// contents.
 pub struct OutlineView {
     focus_handle: FocusHandle,
     shell: gpui::WeakEntity<AppShell>,
-    entries: Vec<OutlineEntry>,
-    /// What the entries were extracted from, so a re-render can tell whether
-    /// anything changed.
-    source: String,
+    /// The document the pane is currently outlining, so a re-render can tell
+    /// whether the shell moved on.
+    document: Option<Entity<DocumentPanel>>,
+    /// Dropped with the pane: these are what keep it following the shell.
+    _subscriptions: Vec<Subscription>,
 }
 
 impl OutlineView {
-    fn new(
-        shell: gpui::WeakEntity<AppShell>,
-        _window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> Self {
-        Self {
+    fn new(shell: gpui::WeakEntity<AppShell>, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        // The shell subscription goes on now, but the first read of the shell
+        // waits for the end of this frame: the shell builds its panes from
+        // inside `update`, so reading it here would re-enter a shell that is
+        // already leased.
+        let shell_changes = shell.upgrade().map(|shell| {
+            cx.subscribe_in(
+                &shell,
+                window,
+                |this: &mut Self, _, _: &ActiveDocumentChanged, window, cx| {
+                    this.follow(window, cx);
+                },
+            )
+        });
+
+        let this = Self {
             focus_handle: cx.focus_handle(),
             shell,
-            entries: Vec::new(),
-            source: String::new(),
-        }
+            document: None,
+            _subscriptions: shell_changes.into_iter().collect(),
+        };
+        cx.defer_in(window, |this, window, cx| this.follow(window, cx));
+        this
     }
 
-    /// Re-read the active document's text and rebuild the outline.
-    fn refresh(&mut self, cx: &mut Context<Self>) {
-        let Some(text) = self.active_document_text(cx) else {
-            self.entries.clear();
-            self.source.clear();
-            cx.notify();
-            return;
-        };
-        if text == self.source {
-            return;
+    /// Follow whatever the shell is showing.
+    ///
+    /// Called when the shell says the active document changed and when the
+    /// document itself reports its buffer changed — the second is what makes a
+    /// heading appear as the user types it.
+    fn follow(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let shell = self.shell.upgrade();
+        let active = shell
+            .as_ref()
+            .and_then(|shell| shell.read(cx).active_document(cx));
+
+        if active != self.document {
+            self.document = active;
+            self.resubscribe(window, cx);
         }
-        self.entries = extract_outline(&text);
-        self.source = text;
         cx.notify();
     }
 
-    /// The active document's text, through the shell.
-    fn active_document_text(&self, cx: &mut Context<Self>) -> Option<String> {
-        let shell = self.shell.upgrade()?;
-        let shell = shell.read(cx);
-        let document = shell.active_document()?;
-        let document = document.read(cx);
-        // The controller is the only thing the shell exposes about a document's
-        // contents, so the text is read back from the file it is showing.
-        std::fs::read_to_string(document.path()).ok()
+    /// Point the subscriptions at the shell and the document on show.
+    fn resubscribe(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self._subscriptions.clear();
+
+        if let Some(shell) = self.shell.upgrade() {
+            self._subscriptions.push(cx.subscribe_in(
+                &shell,
+                window,
+                |this: &mut Self, _, _: &ActiveDocumentChanged, window, cx| {
+                    this.follow(window, cx);
+                },
+            ));
+        }
+
+        if let Some(document) = self.document.clone() {
+            self._subscriptions.push(cx.subscribe_in(
+                &document,
+                window,
+                |_this: &mut Self, _, _: &DocumentEvent, _: &mut Window, cx: &mut Context<Self>| {
+                    cx.notify()
+                },
+            ));
+        }
+    }
+
+    /// The entries the active viewer reports, or `None` when it does not
+    /// outline itself.
+    fn entries(&self, cx: &App) -> Option<Vec<OutlineEntry>> {
+        let document = self.document.as_ref()?.read(cx);
+        document.controller().outline(cx)
+    }
+
+    fn jump(&mut self, line: u32, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(document) = self.document.clone() else {
+            return;
+        };
+        let controller = document.read(cx).controller().clone();
+        controller.goto_line(line, window, cx);
     }
 }
 
@@ -160,19 +203,8 @@ impl gpui::component::dock::Panel for OutlineView {
 
 impl Render for OutlineView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        // Reading the file each frame is cheap relative to a parse and keeps the
-        // outline live without a change subscription the shell does not expose.
-        let text = self.active_document_text(cx);
-        let entries = match &text {
-            Some(text) if text != &self.source => {
-                self.source = text.clone();
-                self.entries = extract_outline(text);
-                self.entries.clone()
-            }
-            _ => self.entries.clone(),
-        };
+        let entries = self.entries(cx);
         let muted = cx.theme().muted_foreground;
-        let empty = entries.is_empty();
 
         rsx! {
             <div class="flex flex-col size-full" bg={cx.theme().tokens.sidebar}>
@@ -189,161 +221,44 @@ impl Render for OutlineView {
                         ghost
                         xsmall
                         tooltip={"Refresh"}
-                        onClick={cx.listener(|this, _, _, cx| this.refresh(cx))}
+                        onClick={cx.listener(|this, _, window, cx| {
+                            this.follow(window, cx)
+                        })}
                     >
                         {icons::icon(lucide_icons::Icon::RefreshCw, 14.)}
                     </Button>
                 </div>
                 <div class="flex-1 min-h-0 overflow-hidden">
-                    {if empty {
-                        rsx! {
+                    {match entries {
+                        None => rsx! {
                             <div class="p-2 text-xs" text_color={muted}>
-                                {"No headings or symbols in the active file."}
+                                {"This file has no outline."}
                             </div>
-                        }
-                    } else {
-                        rsx! {
+                        },
+                        Some(entries) if entries.is_empty() => rsx! {
+                            <div class="p-2 text-xs" text_color={muted}>
+                                {"Nothing to outline in this file."}
+                            </div>
+                        },
+                        Some(entries) => rsx! {
                             <div class="flex flex-col w-full">
                                 {for entry in entries {
                                     <div
-                                        key={format!("{}-{}", entry.depth, entry.label)}
+                                        key={format!("{}:{}", entry.line, entry.label)}
                                         class="flex flex-row items-center w-full h-6 px-2 text-xs overflow-hidden"
                                         pl={px(8. + 12. * entry.depth as f32)}
+                                        on_click={cx.listener(move |this, _, window, cx| {
+                                            this.jump(entry.line, window, cx)
+                                        })}
                                     >
                                         {SharedString::from(entry.label.clone())}
                                     </div>
                                 }}
                             </div>
-                        }
+                        },
                     }}
                 </div>
             </div>
         }
-    }
-}
-
-/// Extract an outline from `text`.
-///
-/// Markdown headings (`#`, `##`, …) and common code declarations are recognised.
-/// Anything else contributes nothing, so a plain text file has an empty outline
-/// rather than a list of every line.
-pub fn extract_outline(text: &str) -> Vec<OutlineEntry> {
-    let mut entries = Vec::new();
-    for line in text.lines() {
-        let trimmed = line.trim_start();
-        if let Some(entry) = markdown_heading(trimmed) {
-            entries.push(entry);
-            continue;
-        }
-        if let Some(entry) = code_symbol(trimmed) {
-            entries.push(entry);
-        }
-    }
-    entries
-}
-
-/// A markdown ATX heading.
-fn markdown_heading(line: &str) -> Option<OutlineEntry> {
-    let hashes = line.chars().take_while(|c| *c == '#').count();
-    if hashes == 0 || hashes > 6 {
-        return None;
-    }
-    let rest = line[hashes..].strip_prefix(' ')?;
-    let label = rest.trim_end_matches('#').trim();
-    if label.is_empty() {
-        return None;
-    }
-    Some(OutlineEntry {
-        label: label.to_owned(),
-        depth: hashes - 1,
-    })
-}
-
-/// A function, struct, class or type declaration at the start of a line.
-fn code_symbol(line: &str) -> Option<OutlineEntry> {
-    const PREFIXES: [&str; 10] = [
-        "pub fn ",
-        "fn ",
-        "pub struct ",
-        "struct ",
-        "pub enum ",
-        "enum ",
-        "pub trait ",
-        "trait ",
-        "class ",
-        "def ",
-    ];
-    for prefix in PREFIXES {
-        if let Some(rest) = line.strip_prefix(prefix) {
-            let name = rest
-                .split(|c: char| !(c.is_alphanumeric() || c == '_'))
-                .next()
-                .unwrap_or("");
-            if !name.is_empty() {
-                return Some(OutlineEntry {
-                    label: name.to_owned(),
-                    depth: 0,
-                });
-            }
-        }
-    }
-    None
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn markdown_headings_become_nested_entries() {
-        let text = "# Title\n\nSome prose.\n\n## Section\n\n### Deeper\n";
-        let entries = extract_outline(text);
-        assert_eq!(
-            entries,
-            vec![
-                OutlineEntry {
-                    label: "Title".to_owned(),
-                    depth: 0
-                },
-                OutlineEntry {
-                    label: "Section".to_owned(),
-                    depth: 1
-                },
-                OutlineEntry {
-                    label: "Deeper".to_owned(),
-                    depth: 2
-                },
-            ]
-        );
-    }
-
-    #[test]
-    fn a_heading_without_text_is_ignored() {
-        assert!(extract_outline("#\n##   \n").is_empty());
-    }
-
-    #[test]
-    fn more_than_six_hashes_is_not_a_heading() {
-        assert!(extract_outline("####### Too deep\n").is_empty());
-    }
-
-    #[test]
-    fn code_declarations_become_entries() {
-        let text = "pub fn open() {}\nstruct Thing;\nfn private() {}\n";
-        let entries = extract_outline(text);
-        let labels: Vec<&str> = entries.iter().map(|entry| entry.label.as_str()).collect();
-        assert_eq!(labels, vec!["open", "Thing", "private"]);
-    }
-
-    #[test]
-    fn plain_prose_has_no_outline() {
-        assert!(extract_outline("just some words\nand more words\n").is_empty());
-    }
-
-    #[test]
-    fn indented_declarations_are_recognised() {
-        let entries = extract_outline("    fn nested() {}\n");
-        assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].label, "nested");
     }
 }

@@ -29,7 +29,7 @@ pub fn render(shell: &AppShell, cx: &App) -> AnyElement {
 
     let mut bar = StatusBar::new().left(SharedString::from(root));
 
-    if let Some(document) = shell.active_document() {
+    if let Some(document) = shell.active_document(cx) {
         let document = document.read(cx);
         bar = bar
             .left(separator(cx))

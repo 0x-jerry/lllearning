@@ -241,9 +241,61 @@ impl Workspace {
     }
 
     /// Highlight `path` and open the folders leading to it.
-    pub fn reveal(&mut self, path: &Path, cx: &mut Context<Self>) {
+    ///
+    /// The folders are read on the background executor, like every other
+    /// listing (risk R8): a reveal into a directory that was never expanded has
+    /// to read it, and doing that inline would freeze the window on a network
+    /// share. The selection and the scroll happen once those listings land, so
+    /// the tree never shows a highlight on a row it has not built yet.
+    pub fn reveal(&mut self, path: &Path, window: &mut Window, cx: &mut Context<Self>) {
         self.tree.reveal(path);
         self.rebuild_tree_state(cx);
+
+        let missing = self.tree.expanded_without_children();
+        if missing.is_empty() {
+            self.scroll_to_selection(cx);
+            return;
+        }
+
+        let target = path.to_path_buf();
+        let this = cx.weak_entity();
+        cx.spawn_in(window, async move |_, cx| {
+            let listings = cx
+                .background_spawn(async move {
+                    missing
+                        .into_iter()
+                        .map(|dir| DirTree::read_listing(&dir))
+                        .collect::<Vec<_>>()
+                })
+                .await;
+            let _ = this.update_in(cx, |this, _, cx| {
+                this.tree.insert_listings(listings);
+                this.rebuild_tree_state(cx);
+                this.scroll_to_selection(cx);
+                cx.emit(WorkspaceEvent::TreeChanged(target));
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// Scroll the tree so the selected row is on screen.
+    ///
+    /// Only a reveal does this: a refresh or a watcher rebuild keeps the scroll
+    /// where the user left it, or the tree would jump under them every time a
+    /// file changed on disk.
+    fn scroll_to_selection(&mut self, cx: &mut Context<Self>) {
+        let selected = self
+            .tree
+            .selected()
+            .map(|path| SharedString::from(path.to_string_lossy().into_owned()));
+        let tree_state = self.tree_state.clone();
+        tree_state.update(cx, |state, cx| {
+            if let Some(ix) = selected.and_then(|id| state.index_of(&id)) {
+                state.scroll_to_item(ix, gpui::ScrollStrategy::Center);
+                cx.notify();
+            }
+        });
     }
 
     /// Rebuild the `TreeState` from the cache, restoring the selection.

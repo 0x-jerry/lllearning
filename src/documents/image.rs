@@ -46,10 +46,7 @@ impl DocumentProvider for ImageProvider {
         let _ = window;
         let controller: Rc<dyn DocumentController> =
             Rc::new(ImageController { view: view.clone() });
-        DocumentContent {
-            view: view.into(),
-            controller,
-        }
+        DocumentContent::static_content(view.into(), controller)
     }
 }
 
