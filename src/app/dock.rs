@@ -345,14 +345,13 @@ impl TabGroupRenderer for ShellTabs {
 
     fn content_frame(
         &self,
-        group: &TabGroupContext,
+        _group: &TabGroupContext,
         _window: &mut Window,
         cx: &mut App,
     ) -> Stateful<Div> {
         div()
             .id("shell-tab-content")
             .bg(cx.theme().tokens.background)
-            .when(group.panels().len() > 1, |this| this.pt_1())
     }
 
     fn render_tab_bar(

@@ -42,7 +42,7 @@ Get-Process lllearning -ErrorAction SilentlyContinue | Stop-Process -Force
 src/main.rs           bootstrap only: fonts, registries, session, open_window
 src/app/              the shell and its chrome
   shell.rs            AppShell: layout, documents, close flow, session
-  skin.rs             ShellSkin: the dock's appearance (written from scratch)
+  dock.rs             ShellSkin: the dock's appearance (written from scratch)
   activity_bar.rs     the icon strip beside each dock
   title_bar.rs        TitleBar wrapper
   status_bar.rs       the footer
@@ -139,7 +139,7 @@ the tab silently loses its title and close button. `PaneProvider::build` returns
 
 **`DockSkin` cannot be extended.** Its shared state is crate-private and a
 second `impl DockAreaRenderer for DockSkin` is barred by the orphan rule, so
-`src/app/skin.rs` is a from-scratch renderer. It copies the construction dance
+`src/app/dock.rs` is a from-scratch renderer. It copies the construction dance
 from `DockSkin::dock_area` to get a `WeakEntity<DockArea>` — that weak handle is
 the only way a tab bar can read dock open/closed state.
 
@@ -149,7 +149,7 @@ a document asks for a `title_bar` even when it is the only tab — the tab is
 where its close button and dirty marker live.
 
 **`Panel::panel_name` returns `&'static str`.** A persisted name that must round
-trip has to be interned; see `interned_name` in `skin.rs`.
+trip has to be interned; see `interned_name` in `dock.rs`.
 
 **Editor dirty tracking.** Subscribe to `InputEvent::Change` only. Restore text
 with `EditorState::set_value`, which emits no change event — using

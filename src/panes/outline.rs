@@ -2,7 +2,7 @@
 //! symbols of the active code file.
 //!
 //! This pane exists to prove the seam: it is a new module plus one
-//! `register_pane` line, and nothing in `app/shell.rs` or `app/skin.rs` changed to
+//! `register_pane` line, and nothing in `app/shell.rs` or `app/dock.rs` changed to
 //! accommodate it. It reads the active document through the shell and extracts
 //! its outline with plain text scanning — no parser, because an outline that
 //! costs a tree-sitter parse per keystroke is not worth it for a first pass.

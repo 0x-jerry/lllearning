@@ -25,7 +25,7 @@ use gpui::{
 use gpui_rsx::rsx;
 
 use crate::{
-    app::{activity_bar::ActivityBar, skin::ShellSkin, status_bar, title_bar},
+    app::{activity_bar::ActivityBar, dock::ShellSkin, status_bar, title_bar},
     documents::DocumentPanel,
     panes::{self, PaneSlot, ShellHandles},
     state::SessionState,

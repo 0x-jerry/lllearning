@@ -5,8 +5,8 @@
 //! the shell" means in practice.
 
 pub mod activity_bar;
+pub mod dock;
 pub mod shell;
-pub mod skin;
 pub mod status_bar;
 pub mod title_bar;
 
