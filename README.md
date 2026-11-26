@@ -42,7 +42,7 @@ nothing extra. For an installer, `cargo packager --release` writes
 ## Develop
 
 ```bash
-cargo test                         # 68 tests, ~0.3s
+cargo test                         # 71 tests, ~0.3s
 cargo fmt --check
 cargo clippy --all-targets --all-features -- -D warnings
 ```
@@ -54,7 +54,9 @@ Rust on [GPUI Kit](https://gpui-kit.com), with the UI written in
 [`rsx!`](https://docs.rs/gpui-rsx). The shell knows three seams and nothing else
 — panes (`src/panes/`), document viewers (`src/documents/`) and the workspace
 (`src/workspace/`) — so adding a pane or a viewer is one new module plus one
-`register_*` line, with no edit under `src/app/`.
+`register_*` line, with no edit under `src/app/`. The window itself is two
+activity strips around an `h_resizable` group of three panels (left dock,
+document tabs, right dock); there is no dock crate involved.
 
 Editing `assets/icon.svg` means regenerating the rasters with `bun install` then
 `bun run build:icon`. The explorer's file-type icons come from

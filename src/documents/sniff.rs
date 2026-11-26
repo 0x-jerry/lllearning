@@ -14,6 +14,9 @@ pub enum FileKind {
     Image,
     Video,
     Markdown,
+    /// The fallback the text viewer claims. Nothing constructs it today; it
+    /// exists so [`kind_for`] answers every extension rather than `None`.
+    #[allow(dead_code)]
     Text,
 }
 

@@ -12,16 +12,14 @@
 //! observation of it: it never reads the file from disk, because the viewer's
 //! buffer is the truth and the disk copy may be behind it.
 
-use std::sync::Arc;
-
 use gpui::component::{
     ActiveTheme as _, Sizable as _,
     button::{Button, ButtonVariants as _},
 };
 use gpui::{
-    App, AppContext as _, Context, Entity, EventEmitter, FocusHandle, Focusable,
-    InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString,
-    StatefulInteractiveElement as _, Styled as _, Subscription, Window, div, px,
+    App, AppContext as _, Context, Entity, FocusHandle, Focusable, InteractiveElement as _,
+    IntoElement, ParentElement as _, Render, SharedString, StatefulInteractiveElement as _,
+    Styled as _, Subscription, Window, div, px,
 };
 use gpui_rsx::rsx;
 
@@ -29,7 +27,7 @@ use crate::{
     app::shell::{ActiveDocumentChanged, AppShell},
     documents::{DocumentEvent, DocumentPanel, OutlineEntry},
     icons,
-    panes::{PaneContext, PaneProvider, PaneSlot},
+    panes::{PaneContent, PaneContext, PaneProvider, PaneSlot},
 };
 
 /// The outline's provider.
@@ -56,15 +54,9 @@ impl PaneProvider for OutlinePane {
         10
     }
 
-    fn build(
-        &self,
-        ctx: PaneContext,
-        window: &mut Window,
-        cx: &mut App,
-    ) -> Arc<dyn gpui::component::dock::BasePanelView> {
-        let _ = ctx.saved;
+    fn build(&self, ctx: PaneContext, window: &mut Window, cx: &mut App) -> PaneContent {
         let view = cx.new(|cx| OutlineView::new(ctx.shell, window, cx));
-        gpui::component::dock::panel_handle(view)
+        PaneContent::new(view)
     }
 }
 
@@ -168,36 +160,6 @@ impl OutlineView {
 impl Focusable for OutlineView {
     fn focus_handle(&self, _: &App) -> FocusHandle {
         self.focus_handle.clone()
-    }
-}
-
-impl EventEmitter<gpui::base::dock::PanelEvent> for OutlineView {}
-
-impl gpui::base::dock::Panel for OutlineView {
-    fn panel_name(&self) -> &'static str {
-        "outline"
-    }
-
-    fn dump(&self, _cx: &App) -> gpui::component::dock::PanelState {
-        gpui::component::dock::PanelState::new("outline")
-    }
-}
-
-impl gpui::component::dock::Panel for OutlineView {
-    fn tab_name(&self, _cx: &App) -> Option<SharedString> {
-        Some(SharedString::from("Outline"))
-    }
-
-    fn title(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        SharedString::from("Outline")
-    }
-
-    fn inner_padding(&self, _cx: &App) -> bool {
-        false
-    }
-
-    fn title_bar(&self, _cx: &App) -> bool {
-        false
     }
 }
 

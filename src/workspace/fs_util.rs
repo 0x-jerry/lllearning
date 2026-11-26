@@ -46,6 +46,7 @@ pub struct DirEntryInfo {
 
 impl DirEntryInfo {
     /// Whether this entry's name marks it as one the explorer skips.
+    #[allow(dead_code)]
     pub fn is_ignored(&self) -> bool {
         is_ignored_name(&self.name)
     }

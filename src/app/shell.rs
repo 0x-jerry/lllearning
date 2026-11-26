@@ -1,53 +1,75 @@
 //! The application shell.
 //!
 //! The shell knows three seams and nothing else: [`PaneRegistry`] for the side
-//! slots, [`DocumentRegistry`] for the center, and [`Workspace`] for the folder.
+//! slots, [`DocumentRegistry`] for the centre, and [`Workspace`] for the folder.
 //! It has no idea what a file, an editor or a webview is — which is what makes
 //! the panes and the viewers replaceable without touching this file.
 //!
-//! # Why some accessors are `pub` but unused by the binary
+//! What it does own is the *arrangement*: two [`SideView`]s and a
+//! [`DocumentsView`] placed in one resizable group, plus everything that follows
+//! from a document opening, closing or being replaced — the tree reveal, the
+//! `ActiveDocumentChanged` event, the session write. The views draw themselves;
+//! they report the change and the shell decides what it means.
 //!
-//! [`AppShell::dock`], [`AppShell::active_panes`], [`AppShell::active_tab`] and
-//! [`AppShell::close_document`] are the shell's own seam: a test drives the dock
-//! and the close flow through them, and a later feature (a keyboard shortcut, a
-//! menu) would too. The dead-code lint cannot see a test-only consumer, so it is
-//! relaxed here rather than hiding the shell's state behind an incomplete API.
-#![allow(dead_code)]
+//! The activity strips sit outside the resizable group on purpose: a collapsed
+//! dock must not take the button that reopens it with it.
+//!
+//! # Why a few accessors are `pub` but unused by the binary
+//!
+//! [`AppShell::active_panes`], [`AppShell::toggle_dock`],
+//! [`AppShell::is_dock_open`], [`AppShell::pick_folder`] and
+//! [`AppShell::refresh_tree`] are the shell's own seam: a test drives the dock
+//! through them, and a later feature (a keyboard shortcut, a menu) would too.
+//! The dead-code lint cannot see a test-only consumer, so it is allowed on those
+//! items rather than hiding the shell's state behind an incomplete API.
 
-use std::{collections::HashMap, path::PathBuf};
+use std::{collections::HashMap, path::PathBuf, rc::Rc};
 
-use gpui::base::dock::{DockArea, DockEvent, DockLayout, DockPlacement, PanelId};
-use gpui::component::{ActiveTheme as _, button::ButtonVariants as _};
+use gpui::component::{
+    ActiveTheme as _, Sizable as _,
+    button::ButtonVariants as _,
+    resizable::{ResizablePanelEvent, ResizableState, h_resizable, resizable_panel},
+};
 use gpui::{
-    App, AppContext as _, Context, Entity, EventEmitter, FocusHandle, Focusable, IntoElement,
-    ParentElement as _, Render, SharedString, Styled as _, Subscription, Window, div, px,
+    AnyElement, App, AppContext as _, Context, Entity, EventEmitter, FocusHandle, Focusable,
+    InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString, Styled as _,
+    Subscription, Window, div, px,
 };
 use gpui_rsx::rsx;
 
 use crate::{
-    app::{activity_bar::ActivityBar, dock::ShellSkin, status_bar, title_bar},
+    app::{documents_view::DocumentsView, side_view::SideView, status_bar, title_bar},
     documents::DocumentPanel,
-    panes::{self, PaneSlot, ShellHandles},
-    state::SessionState,
+    panes::{self, PaneSlot},
+    state::{SessionState, SideState},
     workspace::{Workspace, WorkspaceEvent, fs_util},
 };
+
+/// The width the left dock gets when nothing else says otherwise.
+const LEFT_WIDTH: gpui::Pixels = px(260.);
+/// The width the right dock gets for the same reason.
+const RIGHT_WIDTH: gpui::Pixels = px(420.);
+
+/// How narrow each side dock may be dragged, and how wide.
+const LEFT_RANGE: std::ops::Range<gpui::Pixels> = px(160.)..px(520.);
+const RIGHT_RANGE: std::ops::Range<gpui::Pixels> = px(260.)..px(800.);
 
 /// The application shell.
 pub struct AppShell {
     focus_handle: FocusHandle,
-    /// The dock area: left dock, center, right dock.
-    dock: Entity<DockArea>,
     /// The folder, its tree and its watcher.
     workspace: Entity<Workspace>,
-    /// Which pane each side dock is showing, by provider id.
-    active_panes: HashMap<PaneSlot, String>,
-    /// Every document panel currently open, so the shell can drive them.
-    documents: Vec<Entity<DocumentPanel>>,
+    /// The centre: the document tabs and the document on show.
+    documents: DocumentsView,
+    /// The two side docks, by slot.
+    sides: HashMap<PaneSlot, SideView>,
+    /// The widths of the three columns, so a drag and a restart agree.
+    columns: Entity<ResizableState>,
     /// The file last revealed in the tree.
     ///
-    /// `LayoutChanged` also fires for a dragged divider, which must not scroll
-    /// and rebuild the tree on every frame of the drag; this is what makes the
-    /// reveal happen only when the displayed *file* actually changed.
+    /// The reveal must not scroll and rebuild the tree on every frame of a
+    /// divider drag; this is what makes it happen only when the displayed *file*
+    /// actually changed.
     revealed: Option<PathBuf>,
     /// A URL the browser pane should load next, put here by a viewer that cannot
     /// play a file itself.
@@ -84,35 +106,19 @@ impl AppShell {
     /// here and its construction work runs inside `cx.new`'s own context.
     pub fn new(session: SessionState, window: &mut Window, cx: &mut App) -> Entity<Self> {
         let workspace = Workspace::new(cx);
-        let (dock, skin) = ShellSkin::dock_area("workspace", Some(1), window, cx);
+        let columns = cx.new(|_| ResizableState::default());
 
-        // The shell exists first, with nothing restored. Its panel builders run
-        // inside the dock's registry, and that registry is reached through
-        // `ShellHandles` — which cannot name the shell before the shell exists.
-        // So construction is two steps: build, publish, then restore.
         let shell = cx.new(|cx| Self {
             focus_handle: cx.focus_handle(),
-            dock: dock.clone(),
             workspace: workspace.clone(),
-            active_panes: HashMap::new(),
-            documents: Vec::new(),
+            documents: DocumentsView::default(),
+            sides: HashMap::new(),
+            columns: columns.clone(),
             revealed: None,
             browser_request: None,
             save_task: None,
             _subscriptions: Vec::new(),
         });
-
-        // Now a rebuilt pane can find the workspace and the shell.
-        ShellHandles::set(cx, workspace, shell.downgrade());
-
-        // The skin asks the shell before it closes a tab, because only the
-        // shell knows whether the panel behind it has unsaved work.
-        let gate_shell = shell.downgrade();
-        skin.set_close_request(std::rc::Rc::new(move |panel_id, window, cx| {
-            gate_shell
-                .update(cx, |shell, cx| shell.allow_close(panel_id, window, cx))
-                .unwrap_or(true)
-        }));
 
         shell.update(cx, |shell, cx| {
             shell.subscribe_all(window, cx);
@@ -131,7 +137,7 @@ impl AppShell {
     /// Called once, after the window exists. The save is unconditional — a
     /// session file is a convenience, not user data — but unsaved documents are
     /// reported on stderr before the app goes, because there is no window left
-    /// to prompt in by the time this runs.
+    /// to prompt in by the time this runs (risk R11).
     pub fn install_quit_hook(&mut self, cx: &mut Context<Self>) {
         let this = cx.weak_entity();
         let subscription = cx.on_app_quit(move |this_shell, cx| {
@@ -155,84 +161,32 @@ impl AppShell {
         self._subscriptions.push(subscription);
     }
 
-    /// Whether the dock may close `panel_id` right now.
-    ///
-    /// A clean document closes at once. A dirty one is not closed: the shell
-    /// opens its Save / Discard / Cancel prompt instead, and the prompt does the
-    /// closing when the user answers.
-    fn allow_close(
-        &mut self,
-        panel_id: PanelId,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> bool {
-        let document = self
-            .documents
-            .iter()
-            .find(|document| PanelId::from(document.entity_id()) == panel_id)
-            .cloned();
-
-        match document {
-            Some(document) if document.read(cx).is_dirty(cx) => {
-                self.prompt_save_then_close(document, window, cx);
-                false
-            }
-            // A side pane, or a clean document: the dock closes it.
-            _ => true,
-        }
-    }
-
     /// The workspace folder.
     pub fn workspace(&self) -> &Entity<Workspace> {
         &self.workspace
     }
 
-    /// The dock area, for tests.
-    pub fn dock(&self) -> &Entity<DockArea> {
-        &self.dock
-    }
-
-    /// The documents currently open.
+    /// The documents currently open, in tab order.
     pub fn documents(&self) -> &[Entity<DocumentPanel>] {
-        &self.documents
+        self.documents.documents()
     }
 
-    /// The document the center is showing.
-    ///
-    /// Resolved from the dock rather than remembered: the dock's own view map is
-    /// the only place that knows every open panel, including the ones a restored
-    /// session rebuilt without the shell ever seeing them.
+    /// The document the centre is showing.
     pub fn active_document(&self, cx: &App) -> Option<Entity<DocumentPanel>> {
-        let id = self.active_tab(cx)?;
-        self.dock
-            .read(cx)
-            .panel(id)?
-            .view()
-            .downcast::<DocumentPanel>()
-            .ok()
+        let _ = cx;
+        self.documents.active()
     }
 
     /// Which provider each side dock is showing.
-    pub fn active_panes(&self) -> &HashMap<PaneSlot, String> {
-        &self.active_panes
+    #[allow(dead_code)]
+    pub fn active_panes(&self) -> HashMap<PaneSlot, String> {
+        self.sides
+            .iter()
+            .filter_map(|(slot, side)| side.active().map(|id| (*slot, id.to_owned())))
+            .collect()
     }
 
     fn subscribe_all(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        // The dock tells us when the layout changed, which is when the active
-        // tab may have moved.
-        let dock_subscription = cx.subscribe_in(
-            &self.dock,
-            window,
-            |this: &mut Self, _, event: &DockEvent, window, cx| {
-                if matches!(event, DockEvent::LayoutChanged) {
-                    this.on_layout_changed(window, cx);
-                    // A moved divider, a new tab or a closed tab all land here.
-                    this.schedule_session_save(window, cx);
-                    cx.notify();
-                }
-            },
-        );
-
         let workspace_subscription = cx.subscribe_in(
             &self.workspace,
             window,
@@ -241,7 +195,19 @@ impl AppShell {
             },
         );
 
-        self._subscriptions = vec![dock_subscription, workspace_subscription];
+        // A dragged divider moves the columns; nothing else tells a subscriber
+        // to persist the new widths.
+        let columns_subscription = cx.subscribe_in(
+            &self.columns,
+            window,
+            |this: &mut Self, _, event: &ResizablePanelEvent, window, cx| {
+                if matches!(event, ResizablePanelEvent::Resized) {
+                    this.schedule_session_save(window, cx);
+                }
+            },
+        );
+
+        self._subscriptions = vec![workspace_subscription, columns_subscription];
     }
 
     /// React to a workspace event.
@@ -257,7 +223,7 @@ impl AppShell {
                 // workspace, so they are closed rather than left pointing at
                 // files that are not in the tree.
                 self.close_all_documents(window, cx);
-                self.mount_side_panes(window, cx);
+                self.default_layout(window, cx);
                 self.schedule_session_save(window, cx);
             }
             WorkspaceEvent::TreeChanged(_) => {}
@@ -285,11 +251,9 @@ impl AppShell {
     ) {
         for path in paths {
             let matching: Vec<Entity<DocumentPanel>> = self
-                .documents
+                .documents()
                 .iter()
-                .filter(|document| {
-                    crate::workspace::fs_util::same_path(document.read(cx).path(), path)
-                })
+                .filter(|document| fs_util::same_path(document.read(cx).path(), path))
                 .cloned()
                 .collect();
 
@@ -306,52 +270,31 @@ impl AppShell {
         }
     }
 
-    /// Install the default layout when there is nothing to restore.
-    fn default_layout(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.mount_side_panes(window, cx);
-
-        self.dock.update(cx, |dock, cx| {
-            dock.set_center(DockLayout::tabs(), window, cx)
-        });
+    /// The dock for `slot`, created on first use.
+    fn side(&mut self, slot: PaneSlot, cx: &mut Context<Self>) -> &mut SideView {
+        self.sides
+            .entry(slot)
+            .or_insert_with(|| SideView::new(slot, self.workspace.clone(), cx.weak_entity()))
     }
 
-    /// Build and mount one panel per registered side provider.
-    ///
-    /// This is what makes a new pane appear with no shell edit: the providers
-    /// come from the registry, and each one builds its own panel.
-    fn mount_side_panes(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    /// Install the layout a fresh session starts with: the explorer on the left,
+    /// the browser on the right, both open, and no document.
+    fn default_layout(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.sides.clear();
         for slot in PaneSlot::ALL {
-            let providers = panes::panes_for(cx, slot);
-            if providers.is_empty() {
-                continue;
+            let first = panes::panes_for(cx, slot)
+                .first()
+                .map(|provider| provider.id().to_owned());
+            let side = self.side(slot, cx);
+            match first {
+                Some(id) => {
+                    side.show(&id, window, cx);
+                }
+                None => side.apply(&SideState::default(), cx),
             }
-
-            let mut layout = DockLayout::tabs();
-            for provider in &providers {
-                let panel = provider.build(
-                    panes::PaneContext {
-                        workspace: self.workspace.clone(),
-                        shell: cx.weak_entity(),
-                        saved: None,
-                    },
-                    window,
-                    cx,
-                );
-                layout = layout.panel_view(panel, cx);
-            }
-
-            let size = match slot {
-                PaneSlot::Left => px(260.),
-                PaneSlot::Right => px(420.),
-            };
-            self.dock.update(cx, |dock, cx| {
-                dock.set_dock(slot.placement(), layout, window, cx);
-                dock.set_dock_size(slot.placement(), size, window, cx);
-            });
-
-            // The first provider is the one a fresh session shows.
-            let first = providers[0].id().to_owned();
-            self.active_panes.insert(slot, first);
+            // A closed dock is reopened by its strip, and the strip reads the
+            // active pane, so the pane has to exist before the first frame.
+            side.ensure_active(window, cx);
         }
     }
 
@@ -362,7 +305,7 @@ impl AppShell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        // The workspace first: the dock's panel builders read it.
+        // The workspace first: the panes read it as they are built.
         if let Some(root) = session.workspace_root.clone()
             && root.exists()
         {
@@ -370,43 +313,55 @@ impl AppShell {
                 .update(cx, |workspace, cx| workspace.set_root(root, window, cx));
         }
 
-        match session.dock.clone() {
-            Some(state) => {
-                let loaded = self
-                    .dock
-                    .update(cx, |dock, cx| dock.load(state, window, cx));
-                if loaded.is_err() {
-                    // A layout this build cannot rebuild is worse than none.
-                    eprintln!("the saved layout could not be restored; using the default");
-                    self.default_layout(window, cx);
-                } else {
-                    self.active_panes = session
-                        .active_left
-                        .clone()
-                        .map(|id| (PaneSlot::Left, id))
-                        .into_iter()
-                        .chain(session.active_right.clone().map(|id| (PaneSlot::Right, id)))
-                        .collect();
+        for slot in PaneSlot::ALL {
+            let saved = match slot {
+                PaneSlot::Left => &session.left,
+                PaneSlot::Right => &session.right,
+            };
+            let side = self.side(slot, cx);
+            side.apply(saved, cx);
+            side.ensure_active(window, cx);
+        }
+
+        for saved in &session.documents {
+            match DocumentPanel::open(
+                saved.path.clone(),
+                cx.weak_entity(),
+                self.workspace.clone(),
+                window,
+                cx,
+            ) {
+                Some(document) => self.documents.push(document),
+                // The file or its viewer is gone. The tab is kept rather than
+                // dropped, because the session named it (risk R12).
+                None => {
+                    eprintln!("could not reopen {}", saved.path.display());
+                    self.documents
+                        .push(DocumentPanel::missing(saved.path.clone(), cx));
                 }
             }
-            None => self.default_layout(window, cx),
+        }
+        self.documents.restore_active(session.active_document);
+
+        if let Some(document) = self.active_document(cx) {
+            let controller = document.read(cx).controller().clone();
+            controller.focus(window, cx);
+            let path = document.read(cx).path().to_path_buf();
+            self.reveal(&path, window, cx);
         }
     }
 
-    /// Open a file in the center.
+    /// Open a file in the centre.
     pub fn open_path(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
         let canonical = std::fs::canonicalize(&path).unwrap_or(path);
 
         // A tab for this file already exists: select it rather than duplicate.
         let existing = self
-            .documents
+            .documents()
             .iter()
-            .find(|document| {
-                crate::workspace::fs_util::same_path(document.read(cx).path(), &canonical)
-            })
-            .cloned();
-        if let Some(existing) = existing {
-            self.select_document(&existing, window, cx);
+            .position(|document| fs_util::same_path(document.read(cx).path(), &canonical));
+        if let Some(ix) = existing {
+            self.select_document(ix, window, cx);
             return;
         }
 
@@ -422,54 +377,33 @@ impl AppShell {
             return;
         };
 
-        let handle = gpui::component::dock::panel_handle(panel.clone());
-        self.dock.update(cx, |dock, cx| {
-            dock.add_panel_view(handle, DockPlacement::Center, None, window, cx);
-        });
-
-        self.documents.push(panel.clone());
-        let controller = panel.read(cx).controller().clone();
-        controller.focus(window, cx);
-        // `add_panel_view` activates the new tab, but a shell that only heard
-        // about it from `LayoutChanged` would reveal the file a frame late. Doing
-        // it here too keeps the tree in step with the tab the user just opened.
+        self.documents.push(panel);
+        if let Some(document) = self.active_document(cx) {
+            let controller = document.read(cx).controller().clone();
+            controller.focus(window, cx);
+        }
         self.reveal(&canonical, window, cx);
         cx.emit(ActiveDocumentChanged);
+        self.schedule_session_save(window, cx);
         cx.notify();
     }
 
-    /// Show an already-open document.
-    fn select_document(
-        &mut self,
-        document: &Entity<DocumentPanel>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let panel_id = PanelId::from(document.entity_id());
-        self.dock.update(cx, |dock, cx| {
-            dock.select_panel(panel_id, window, cx);
-        });
+    /// Show the document at `ix` in the centre.
+    fn select_document(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.documents.select(ix) {
+            return;
+        }
         // Selecting a tab is also focusing it: the editor should take the
         // keyboard, or the user's next keystroke goes to the last thing that had
         // it.
-        let controller = document.read(cx).controller().clone();
-        controller.focus(window, cx);
-        cx.emit(ActiveDocumentChanged);
-        cx.notify();
-    }
-
-    /// Follow a dock layout change: the displayed tab may be a different file.
-    fn on_layout_changed(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        // A moved divider, a new tab or a closed tab all land here.
-        self.schedule_session_save(window, cx);
-
-        let path = self
-            .active_document(cx)
-            .map(|document| document.read(cx).path().to_path_buf());
-        if let Some(path) = path {
+        if let Some(document) = self.active_document(cx) {
+            let controller = document.read(cx).controller().clone();
+            controller.focus(window, cx);
+            let path = document.read(cx).path().to_path_buf();
             self.reveal(&path, window, cx);
         }
         cx.emit(ActiveDocumentChanged);
+        self.schedule_session_save(window, cx);
         cx.notify();
     }
 
@@ -493,9 +427,8 @@ impl AppShell {
 
     /// Close one document, prompting if it has unsaved changes.
     ///
-    /// This is the path a keyboard shortcut or a menu uses. The tab bar's own
-    /// close button goes through [`Self::allow_close`], which calls the same
-    /// prompt.
+    /// This is the path a keyboard shortcut, a menu and the tab's own close
+    /// button all take.
     pub fn close_document(
         &mut self,
         document: Entity<DocumentPanel>,
@@ -507,14 +440,6 @@ impl AppShell {
             return;
         }
         self.remove_document(&document, window, cx);
-    }
-
-    /// The tab the dock is showing, if it is a document.
-    pub fn active_tab(&self, cx: &App) -> Option<PanelId> {
-        self.dock
-            .read(cx)
-            .layout(DockPlacement::Center)
-            .and_then(active_panel_in_tree)
     }
 
     /// Ask whether to save, discard or cancel before closing.
@@ -530,11 +455,11 @@ impl AppShell {
             dialog::{DialogAction, DialogClose, DialogFooter},
         };
 
-        let name = crate::workspace::fs_util::file_name_of(document.read(cx).path());
+        let name = fs_util::file_name_of(document.read(cx).path());
         // The dialog's builder and its callbacks are all `Fn`, so every captured
         // value is cloned out of the shared state rather than moved.
-        let for_discard = std::rc::Rc::new(document.clone());
-        let for_save = std::rc::Rc::new(document);
+        let for_discard = Rc::new(document.clone());
+        let for_save = Rc::new(document);
         let shell = cx.weak_entity();
         let shell_for_discard = shell.clone();
 
@@ -543,27 +468,30 @@ impl AppShell {
             let discard_shell = shell_for_discard.clone();
             let save_document = for_save.clone();
             let save_shell = shell.clone();
+            let body =
+                SharedString::from(format!("{name} has unsaved changes. Save before closing?"));
+            let discard = Button::new("discard")
+                .label("Discard")
+                .on_click(move |_, window, cx| {
+                    let document = discard_document.clone();
+                    let _ = discard_shell.update(cx, |shell, cx| {
+                        shell.remove_document(&document, window, cx);
+                    });
+                    window.close_dialog(cx);
+                });
+
+            let footer = rsx! {
+                <DialogFooter base={DialogFooter::new()}>
+                    {DialogClose::new().trigger(|button| button.label("Cancel"))}
+                    {discard}
+                    {DialogAction::new().child(Button::new("save").label("Save").primary())}
+                </DialogFooter>
+            };
+
             dialog
                 .title(SharedString::from("Unsaved changes"))
-                .child(SharedString::from(format!(
-                    "{name} has unsaved changes. Save before closing?"
-                )))
-                .footer(
-                    DialogFooter::new()
-                        .child(DialogClose::new().trigger(|button| button.label("Cancel")))
-                        .child(Button::new("discard").label("Discard").on_click(
-                            move |_, window, cx| {
-                                let document = discard_document.clone();
-                                let _ = discard_shell.update(cx, |shell, cx| {
-                                    shell.remove_document(&document, window, cx);
-                                });
-                                window.close_dialog(cx);
-                            },
-                        ))
-                        .child(
-                            DialogAction::new().child(Button::new("save").label("Save").primary()),
-                        ),
-                )
+                .child(body)
+                .footer(footer)
                 .on_ok(move |_, window, cx| {
                     let document = save_document.clone();
                     let saved =
@@ -584,30 +512,36 @@ impl AppShell {
         });
     }
 
-    /// Drop a document's tab and its record.
+    /// Drop a document's tab, and follow whatever the centre now shows.
     fn remove_document(
         &mut self,
         document: &Entity<DocumentPanel>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let panel = document.clone();
-        self.dock.update(cx, |dock, cx| {
-            dock.remove_panel(panel, window, cx);
-        });
+        let Some(next) = self.documents.remove(document) else {
+            // Nothing left to show.
+            self.revealed = None;
+            cx.emit(ActiveDocumentChanged);
+            self.schedule_session_save(window, cx);
+            cx.notify();
+            return;
+        };
 
-        self.documents.retain(|open| open != document);
+        // The tab that took its place is now what the centre shows, so the tree
+        // and the status bar have to hear about it.
+        let path = next.read(cx).path().to_path_buf();
+        self.reveal(&path, window, cx);
+        cx.emit(ActiveDocumentChanged);
+        self.schedule_session_save(window, cx);
         cx.notify();
     }
 
     /// Close every document, discarding changes.
     fn close_all_documents(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        for document in std::mem::take(&mut self.documents) {
-            self.dock.update(cx, |dock, cx| {
-                dock.remove_panel(document, window, cx);
-            });
-        }
+        self.documents.clear();
         self.revealed = None;
+        self.schedule_session_save(window, cx);
         cx.emit(ActiveDocumentChanged);
         cx.notify();
     }
@@ -621,76 +555,26 @@ impl AppShell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        // Pressing the button of the pane on show means "put that away", which
-        // is the only collapse affordance the strip has.
-        if self.is_dock_open(slot, cx)
-            && self
-                .active_panes
-                .get(&slot)
-                .is_some_and(|id| id == provider_id)
-        {
-            self.toggle_dock(slot, window, cx);
+        if !self.side(slot, cx).show(provider_id, window, cx) {
             return;
         }
-
-        let Some(provider) = panes::pane_by_id(cx, provider_id) else {
-            return;
-        };
-        self.active_panes.insert(slot, provider_id.to_owned());
-
-        // Select the pane's tab if it is mounted; otherwise mount it.
-        let existing = self
-            .dock
-            .read(cx)
-            .layout(slot.placement())
-            .map(panel_ids_in_tree)
-            .unwrap_or_default()
-            .into_iter()
-            .find(|id| {
-                self.dock
-                    .read(cx)
-                    .panel(*id)
-                    .is_some_and(|panel| panel.panel_name(cx) == provider.id())
-            });
-
-        match existing {
-            Some(id) => {
-                self.dock.update(cx, |dock, cx| {
-                    dock.select_panel(id, window, cx);
-                    if !dock.is_dock_open(slot.placement()) {
-                        dock.toggle_dock(slot.placement(), window, cx);
-                    }
-                });
-            }
-            None => {
-                let panel = provider.build(
-                    panes::PaneContext {
-                        workspace: self.workspace.clone(),
-                        shell: cx.weak_entity(),
-                        saved: None,
-                    },
-                    window,
-                    cx,
-                );
-                self.dock.update(cx, |dock, cx| {
-                    dock.add_panel_view(panel, slot.placement(), None, window, cx);
-                });
-            }
-        }
+        self.schedule_session_save(window, cx);
         cx.notify();
     }
 
     /// Toggle a side dock open or closed.
+    #[allow(dead_code)]
     pub fn toggle_dock(&mut self, slot: PaneSlot, window: &mut Window, cx: &mut Context<Self>) {
-        self.dock.update(cx, |dock, cx| {
-            dock.toggle_dock(slot.placement(), window, cx);
-        });
+        self.side(slot, cx).toggle(window, cx);
+        self.schedule_session_save(window, cx);
         cx.notify();
     }
 
     /// Whether a side dock is open.
+    #[allow(dead_code)]
     pub fn is_dock_open(&self, slot: PaneSlot, cx: &App) -> bool {
-        self.dock.read(cx).is_dock_open(slot.placement())
+        let _ = cx;
+        self.sides.get(&slot).is_some_and(|side| side.is_open())
     }
 
     /// Navigate the browser pane to `url`.
@@ -710,12 +594,14 @@ impl AppShell {
     }
 
     /// Ask for a folder and open it.
+    #[allow(dead_code)]
     pub fn pick_folder(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.workspace
             .update(cx, |workspace, cx| workspace.pick_root(window, cx));
     }
 
     /// Re-read the tree.
+    #[allow(dead_code)]
     pub fn refresh_tree(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.workspace
             .update(cx, |workspace, cx| workspace.refresh(window, cx));
@@ -755,38 +641,137 @@ impl AppShell {
                 .read(cx)
                 .root()
                 .map(|path| path.to_path_buf()),
-            dock: Some(self.dock.read(cx).dump(cx)),
-            active_left: self.active_panes.get(&PaneSlot::Left).cloned(),
-            active_right: self.active_panes.get(&PaneSlot::Right).cloned(),
+            // Columns: left dock, centre, right dock.
+            left: self.side_state(PaneSlot::Left, 0, cx),
+            right: self.side_state(PaneSlot::Right, 2, cx),
+            documents: self
+                .documents()
+                .iter()
+                .map(|document| crate::state::SavedDocument {
+                    path: document.read(cx).path().to_path_buf(),
+                })
+                .collect(),
+            active_document: self.documents.saved_active(),
             window: None,
         }
     }
+
+    /// One dock's state, with the width the columns measured.
+    fn side_state(&self, slot: PaneSlot, ix: usize, cx: &App) -> SideState {
+        let width = self
+            .columns
+            .read(cx)
+            .sizes()
+            .get(ix)
+            .map(|size| size.as_f32())
+            .filter(|width| *width > 1.);
+        match self.sides.get(&slot) {
+            Some(side) => side.state(width),
+            None => SideState::default(),
+        }
+    }
+
+    /// The width to lay a dock out at on the first frame.
+    fn column_size(
+        &self,
+        slot: PaneSlot,
+        ix: usize,
+        fallback: gpui::Pixels,
+        cx: &App,
+    ) -> gpui::Pixels {
+        self.columns
+            .read(cx)
+            .sizes()
+            .get(ix)
+            .copied()
+            .filter(|size| *size > px(1.))
+            .or_else(|| self.sides.get(&slot).and_then(|side| side.saved_width()))
+            .unwrap_or(fallback)
+    }
+}
+
+/// A framed area of the window: an optional header strip above a body.
+///
+/// The side docks and the centre are the same shape, which is why they share
+/// this rather than each drawing their own frame.
+pub(crate) fn frame(
+    id: &'static str,
+    header: Option<AnyElement>,
+    body: AnyElement,
+    cx: &App,
+) -> AnyElement {
+    let background = cx.theme().tokens.background;
+
+    rsx! {
+        <div
+            id={SharedString::from(id)}
+            class="flex flex-col size-full min-w-0 min-h-0"
+            bg={background}
+        >
+            {...header.into_iter()}
+            <div class="flex-1 min-h-0 overflow-hidden">{body}</div>
+        </div>
+    }
+    .into_any_element()
+}
+
+/// What a pane shows when it has nothing to show.
+pub(crate) fn empty_state(title: &str, hint: &str, cx: &App) -> AnyElement {
+    let muted = cx.theme().muted_foreground;
+    let foreground = cx.theme().foreground;
+    let title = SharedString::from(title.to_owned());
+    let hint = SharedString::from(hint.to_owned());
+
+    rsx! {
+        <div class="flex flex-col size-full items-center justify-center gap-2 p-6">
+            {gpui::component::Icon::new(gpui::component::IconName::FolderOpen)
+                .large()
+                .text_color(muted)}
+            <div class="text-sm" text_color={foreground}>{title}</div>
+            <div class="text-xs" text_color={muted}>{hint}</div>
+        </div>
+    }
+    .into_any_element()
 }
 
 impl Render for AppShell {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let _ = window;
-        let left_active = self.active_panes.get(&PaneSlot::Left).cloned();
-        let right_active = self.active_panes.get(&PaneSlot::Right).cloned();
-        let dock = self.dock.clone();
-        let left_open = self.is_dock_open(PaneSlot::Left, cx);
-        let right_open = self.is_dock_open(PaneSlot::Right, cx);
-        // A collapsed dock shows no pane, so its strip must not mark one as
-        // selected -- otherwise the button would read as active while the pane
-        // it names is hidden.
-        let left_shown = left_open.then_some(left_active).flatten();
-        let right_shown = right_open.then_some(right_active).flatten();
+        // Widths first: reading them borrows the shell immutably, and `side`
+        // below hands out a mutable borrow of the dock.
+        let left_width = self.column_size(PaneSlot::Left, 0, LEFT_WIDTH, cx);
+        let right_width = self.column_size(PaneSlot::Right, 2, RIGHT_WIDTH, cx);
+
+        let left = self.side(PaneSlot::Left, cx);
+        let left_strip = left.render_strip(cx);
+        let left_open = left.is_open();
+        let left_content = left.render_content(cx);
+
+        let right = self.side(PaneSlot::Right, cx);
+        let right_strip = right.render_strip(cx);
+        let right_open = right.is_open();
+        let right_content = right.render_content(cx);
+
+        let documents = self.documents.render(
+            cx.listener(|this: &mut AppShell, ix: &usize, window, cx| {
+                this.select_document(*ix, window, cx)
+            }),
+            cx.listener(|this: &mut AppShell, ix: &usize, window, cx| {
+                if let Some(document) = this.documents().get(*ix).cloned() {
+                    this.close_document(document, window, cx);
+                }
+            }),
+            cx,
+        );
 
         // Everything read from the app is resolved into owned values first.
-        // The listeners below each need `cx` mutably, and one immutable borrow
+        // The listeners above each need `cx` mutably, and one immutable borrow
         // of the theme cannot overlap another.
         struct Chrome {
             background: gpui::Background,
             foreground: gpui::Hsla,
             font_family: SharedString,
             font_size: gpui::Pixels,
-            border: gpui::Hsla,
-            sidebar: gpui::Hsla,
         }
         let chrome = {
             let theme = cx.theme();
@@ -795,26 +780,12 @@ impl Render for AppShell {
                 foreground: theme.foreground,
                 font_family: theme.font_family.clone(),
                 font_size: theme.font_size,
-                border: theme.border,
-                sidebar: theme.tokens.sidebar.color,
             }
         };
-        let left_providers = panes::panes_for(cx, PaneSlot::Left);
-        let right_providers = panes::panes_for(cx, PaneSlot::Right);
 
         let title = title_bar::render();
         let status = status_bar::render(self, cx);
-
-        let left_strip = ActivityBar::new(PaneSlot::Left, left_shown, left_providers)
-            .on_select(cx.listener(|this, id: &SharedString, window, cx| {
-                this.show_pane(PaneSlot::Left, id, window, cx);
-            }))
-            .render(chrome.border, chrome.sidebar);
-        let right_strip = ActivityBar::new(PaneSlot::Right, right_shown, right_providers)
-            .on_select(cx.listener(|this, id: &SharedString, window, cx| {
-                this.show_pane(PaneSlot::Right, id, window, cx);
-            }))
-            .render(chrome.border, chrome.sidebar);
+        let columns = self.columns.clone();
 
         rsx! {
             <div
@@ -827,42 +798,35 @@ impl Render for AppShell {
                 {title}
                 <div class="flex flex-row flex-1 min-h-0 items-stretch">
                     {left_strip}
-                    <div class="flex-1 min-w-0">{dock.clone()}</div>
+                    <div class="flex-1 min-w-0">
+                        <h_resizable("workspace-columns") with_state={&columns}>
+                            <resizable_panel
+                                base={resizable_panel().visible(left_open)}
+                                size={left_width}
+                                size_range={LEFT_RANGE}
+                                flex_none
+                            >
+                                {left_content}
+                            </resizable_panel>
+                            <resizable_panel>
+                                {documents}
+                            </resizable_panel>
+                            <resizable_panel
+                                base={resizable_panel().visible(right_open)}
+                                size={right_width}
+                                size_range={RIGHT_RANGE}
+                                flex_none
+                            >
+                                {right_content}
+                            </resizable_panel>
+                        </h_resizable>
+                    </div>
                     {right_strip}
                 </div>
                 {status}
             </div>
         }
     }
-}
-
-/// Every panel id in a tree, in tab order.
-fn panel_ids_in_tree(tree: &gpui::base::dock::PaneTree) -> Vec<PanelId> {
-    let mut ids = Vec::new();
-    collect_panel_ids(tree.root(), &mut ids);
-    ids
-}
-
-fn collect_panel_ids(node: &gpui::base::dock::PaneNode, ids: &mut Vec<PanelId>) {
-    match node.kind() {
-        gpui::base::dock::PaneRef::Split { children, .. } => {
-            for child in children {
-                collect_panel_ids(child, ids);
-            }
-        }
-        gpui::base::dock::PaneRef::Tabs { panels, .. } => ids.extend(panels.iter().copied()),
-    }
-}
-
-/// The panel id of the selected tab in a tree, if any.
-fn active_panel_in_tree(tree: &gpui::base::dock::PaneTree) -> Option<PanelId> {
-    fn walk(node: &gpui::base::dock::PaneNode) -> Option<PanelId> {
-        match node.kind() {
-            gpui::base::dock::PaneRef::Split { children, .. } => children.iter().find_map(walk),
-            gpui::base::dock::PaneRef::Tabs { panels, active_ix } => panels.get(active_ix).copied(),
-        }
-    }
-    walk(tree.root())
 }
 
 /// Whether any document has unsaved changes, for the quit guard.

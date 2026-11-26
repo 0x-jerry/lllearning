@@ -26,6 +26,7 @@ use gpui::{
     ParentElement as _, Render, SharedString, Styled as _, Window, div,
     prelude::FluentBuilder as _,
 };
+use gpui_rsx::rsx;
 
 use super::{DocumentContent, DocumentController, DocumentProvider, OpenContext, Sniff, sniff};
 
@@ -136,38 +137,35 @@ impl EventEmitter<()> for VideoView {}
 impl Render for VideoView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let name = crate::workspace::fs_util::file_name_of(&self.path);
+        let open_in_browser = cx.listener(|this, _, _, cx| this.open_in_browser(cx));
 
-        div()
-            .size_full()
-            .flex()
-            .items_center()
-            .justify_center()
-            .child(
-                Empty::new()
-                    .header(
-                        EmptyHeader::new()
-                            .media(
-                                EmptyMedia::new()
-                                    .with_variant(EmptyMediaVariant::Icon)
-                                    .child(Icon::new(gpui::assets::IconName::Video)),
-                            )
-                            .title(EmptyTitle::new().child(SharedString::from(name)))
-                            .description(EmptyDescription::new().child(
-                                "GPUI has no video element yet, so this file cannot be \
-                                 played here.",
-                            )),
-                    )
-                    .content(
-                        EmptyContent::new().child(
+        rsx! {
+            <div
+                class="flex size-full items-center justify-center"
+                when={(self.path.exists(), |this| this)}
+                text_color={cx.theme().foreground}
+            >
+                <Empty base={Empty::new()}
+                    header={EmptyHeader::new()
+                        .media(
+                            EmptyMedia::new()
+                                .with_variant(EmptyMediaVariant::Icon)
+                                .child(Icon::new(gpui::assets::IconName::Video)),
+                        )
+                        .title(EmptyTitle::new().child(SharedString::from(name)))
+                        .description(EmptyDescription::new().child(
+                            "GPUI has no video element yet, so this file cannot be played here.",
+                        ))}
+                    content={EmptyContent::new()
+                        .child(
                             Button::new("video-open-browser")
                                 .label("Open in browser pane")
                                 .small()
-                                .on_click(cx.listener(|this, _, _, cx| this.open_in_browser(cx))),
-                        ),
-                    ),
-            )
-            .when(self.path.exists(), |this| this)
-            .text_color(cx.theme().foreground)
+                                .on_click(open_in_browser),
+                        )}
+                />
+            </div>
+        }
     }
 }
 

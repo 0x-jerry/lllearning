@@ -52,6 +52,7 @@ impl DirTree {
     }
 
     /// The workspace folder, if one is open.
+    #[allow(dead_code)]
     pub fn root(&self) -> Option<&Path> {
         self.root.as_deref()
     }
@@ -62,6 +63,7 @@ impl DirTree {
     }
 
     /// Record the highlighted entry without touching the disk.
+    #[allow(dead_code)]
     pub fn set_selected(&mut self, path: Option<PathBuf>) {
         self.selected = path;
     }
@@ -83,6 +85,7 @@ impl DirTree {
     }
 
     /// Whether a directory's listing was capped.
+    #[allow(dead_code)]
     pub fn is_truncated(&self, path: &Path) -> bool {
         self.truncated.contains(path)
     }
@@ -157,6 +160,7 @@ impl DirTree {
     ///
     /// Unlike [`Self::invalidate`] this leaves the expansion state alone, so the
     /// tree does not flicker closed while its contents are refreshed.
+    #[allow(dead_code)]
     pub fn refresh(&mut self, dir: &Path) -> bool {
         if !self.loaded.contains_key(dir) {
             return false;
@@ -192,6 +196,7 @@ impl DirTree {
     }
 
     /// Mark a directory open without toggling, for "reveal" and for restore.
+    #[allow(dead_code)]
     pub fn expand(&mut self, dir: &Path) {
         self.expanded.insert(dir.to_path_buf());
     }
@@ -376,6 +381,7 @@ fn id_for(path: &Path) -> SharedString {
 /// This is the synchronous form used by tests and by the session restore, which
 /// reads a handful of folders once; the interactive path reads one directory on
 /// the background executor instead.
+#[allow(dead_code)]
 pub fn load_expanded(tree: &mut DirTree) -> bool {
     let mut changed = false;
     for dir in tree.expanded_without_children() {

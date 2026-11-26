@@ -96,6 +96,7 @@ fn collect(event: notify::Result<Event>, pending: &mut BTreeSet<PathBuf>) {
 }
 
 /// Whether `path` is under `root`.
+#[allow(dead_code)]
 pub fn is_within(root: &Path, path: &Path) -> bool {
     path.starts_with(root)
 }

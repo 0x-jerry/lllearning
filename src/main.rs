@@ -42,9 +42,8 @@ fn main() {
                 eprintln!("failed to create the tray icon: {error}");
             }
 
-            // The session is read before the window opens: the dock's panel
-            // builders run while the shell is constructed, and they need the
-            // folder it names.
+            // The session is read before the window opens: the shell builds its
+            // panes while it is constructed, and they need the folder it names.
             let session = state::load().unwrap_or_default();
 
             let options = WindowOptions {

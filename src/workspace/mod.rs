@@ -10,9 +10,8 @@
 //! The workspace's readers — [`Workspace::tree`], the path predicates, the
 //! synchronous [`tree::load_expanded`] — are part of the seam's contract and are
 //! asserted by unit tests rather than by every call site in the binary. The
-//! dead-code lint cannot see a test-only consumer, so it is relaxed here rather
-//! than trimming the API to whatever the current UI happens to touch.
-#![allow(dead_code)]
+//! dead-code lint cannot see a test-only consumer, so it is allowed on those
+//! items rather than trimming the API to whatever the current UI happens to touch.
 
 pub mod fs_util;
 pub mod tree;
@@ -83,6 +82,7 @@ impl Workspace {
     }
 
     /// The directory cache, for the explorer to render icons and expansion from.
+    #[allow(dead_code)]
     pub fn tree(&self) -> &DirTree {
         &self.tree
     }
@@ -125,6 +125,7 @@ impl Workspace {
     }
 
     /// Forget the open folder, its tree and its watcher.
+    #[allow(dead_code)]
     pub fn clear_root(&mut self, cx: &mut Context<Self>) {
         self.tree.reset();
         self.root = None;
@@ -404,11 +405,13 @@ impl Workspace {
 }
 
 /// Whether `path` is inside the workspace root.
+#[allow(dead_code)]
 pub fn is_inside(root: Option<&Path>, path: &Path) -> bool {
     root.is_some_and(|root| path.starts_with(root) || fs_util::same_path(root, path))
 }
 
 /// The label for a workspace root: its folder name.
+#[allow(dead_code)]
 pub fn root_label(root: &Path) -> String {
     fs_util::file_name_of(root)
 }

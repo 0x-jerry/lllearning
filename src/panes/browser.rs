@@ -1,12 +1,12 @@
-//! The browser pane: the app's original webview, extracted into a dock panel.
+//! The browser pane: the app's original webview, framed by a side pane.
 //!
 //! The navigation logic is unchanged from the single-view demo — address
 //! resolution, back/forward/reload/stop, the event channel — because that logic
-//! was correct and is unrelated to where the webview sits. What is new is the
-//! panel wrapper: no title bar (the pane carries its own toolbar), no inner
-//! padding, and a persisted payload holding the current URL.
+//! was correct and is unrelated to where the webview sits. What the pane adds is
+//! its own toolbar, and the one hook the shell needs: the page is a native child
+//! window, so the pane hides it whenever it stops being on show (risk R1b).
 
-use std::sync::Arc;
+use std::rc::Rc;
 
 use gpui::component::{
     ActiveTheme as _, Sizable as _,
@@ -14,16 +14,15 @@ use gpui::component::{
     input::{Input, InputEvent, InputState},
 };
 use gpui::{
-    App, AppContext as _, Context, Entity, EventEmitter, FocusHandle, Focusable, IntoElement,
-    ParentElement as _, Render, SharedString, Styled as _, Subscription, Window, div, px,
+    App, AppContext as _, Context, Entity, FocusHandle, Focusable, IntoElement, ParentElement as _,
+    Render, SharedString, Styled as _, Subscription, Window, div, px,
 };
 use gpui_rsx::rsx;
 use gpui_webview::WebView;
-use serde_json::json;
 
 use crate::{
     icons,
-    panes::{PaneContext, PaneProvider, PaneSlot},
+    panes::{PaneContent, PaneContext, PaneProvider, PaneSlot},
 };
 
 /// Shown until the user navigates somewhere, and when they clear the address bar.
@@ -103,20 +102,19 @@ impl PaneProvider for BrowserPane {
         0
     }
 
-    fn build(
-        &self,
-        ctx: PaneContext,
-        window: &mut Window,
-        cx: &mut App,
-    ) -> Arc<dyn gpui::component::dock::BasePanelView> {
-        let saved_url = ctx
-            .saved
-            .as_ref()
-            .and_then(|value| value.get("url"))
-            .and_then(|url| url.as_str())
-            .map(str::to_owned);
-        let view = cx.new(|cx| BrowserView::new(saved_url, ctx.shell, window, cx));
-        gpui::component::dock::panel_handle(view)
+    fn build(&self, ctx: PaneContext, window: &mut Window, cx: &mut App) -> PaneContent {
+        let view = cx.new(|cx| BrowserView::new(ctx.shell, window, cx));
+        // The page is a native child window, so it does not leave the screen
+        // when the element placing it does (risk R1b). The shell tells the pane
+        // whenever it stops being the one on show, and the pane hides the page
+        // itself.
+        let for_activation = view.downgrade();
+        PaneContent {
+            view: view.into(),
+            activation: Some(Rc::new(move |active, _window, cx| {
+                let _ = for_activation.update(cx, |view, cx| view.set_webview_visible(active, cx));
+            })),
+        }
     }
 }
 
@@ -135,8 +133,6 @@ pub struct BrowserView {
     error_address: String,
     /// Whether the page on screen is the start page, which has no URL to reload.
     start_page: bool,
-    /// The last URL the webview reported, for the persisted payload.
-    current_url: String,
     /// The shell, for the navigations other panes route through it.
     shell: gpui::WeakEntity<crate::app::shell::AppShell>,
     _address_events: Subscription,
@@ -144,7 +140,6 @@ pub struct BrowserView {
 
 impl BrowserView {
     fn new(
-        saved_url: Option<String>,
         shell: gpui::WeakEntity<crate::app::shell::AppShell>,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -219,7 +214,7 @@ impl BrowserView {
         })
         .detach();
 
-        let mut view = Self {
+        Self {
             focus_handle: cx.focus_handle(),
             webview,
             address,
@@ -228,19 +223,9 @@ impl BrowserView {
             error: None,
             error_address: String::new(),
             start_page: true,
-            current_url: String::new(),
             shell,
             _address_events: address_events,
-        };
-
-        // A restored URL is loaded after construction, when the webview exists.
-        if let Some(url) = saved_url
-            && !url.is_empty()
-        {
-            view.navigate(&url, window, cx);
         }
-
-        view
     }
 
     fn set_loading(&mut self, loading: bool, cx: &mut Context<Self>) {
@@ -263,7 +248,6 @@ impl BrowserView {
             }
             WebViewEvent::Url(url) => url,
         };
-        self.current_url = url.clone();
         let shown = if is_start_page(&url) {
             String::new()
         } else {
@@ -305,7 +289,6 @@ impl BrowserView {
         match started {
             Ok(()) => {
                 self.start_page = false;
-                self.current_url = url;
             }
             Err(message) => {
                 self.error = Some(message);
@@ -327,7 +310,6 @@ impl BrowserView {
             .load_html(START_PAGE_HTML)
             .map_err(|error| error.to_string());
         self.start_page = loaded.is_ok();
-        self.current_url.clear();
         if let Err(message) = loaded {
             self.error = Some(message);
             self.error_address.clear();
@@ -378,15 +360,6 @@ impl BrowserView {
         self.set_loading(false, cx);
     }
 
-    /// The URL to persist.
-    fn current_url(&self) -> String {
-        if self.start_page {
-            String::new()
-        } else {
-            self.current_url.clone()
-        }
-    }
-
     /// Take a navigation another pane asked the shell for.
     fn take_shell_request(&self, cx: &mut Context<Self>) -> Option<String> {
         let shell = self.shell.upgrade()?;
@@ -422,8 +395,6 @@ impl Focusable for BrowserView {
         self.focus_handle.clone()
     }
 }
-
-impl EventEmitter<gpui::base::dock::PanelEvent> for BrowserView {}
 
 impl Render for BrowserView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -526,46 +497,6 @@ impl Render for BrowserView {
                 </div>
             </div>
         }
-    }
-}
-
-impl gpui::base::dock::Panel for BrowserView {
-    fn panel_name(&self) -> &'static str {
-        "browser"
-    }
-
-    fn set_active(&mut self, active: bool, _window: &mut Window, cx: &mut Context<Self>) {
-        self.set_webview_visible(active, cx);
-    }
-
-    fn on_removed(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
-        self.set_webview_visible(false, cx);
-    }
-
-    fn dump(&self, _cx: &App) -> gpui::component::dock::PanelState {
-        gpui::component::dock::PanelState {
-            panel_name: "browser".to_owned(),
-            children: Vec::new(),
-            info: gpui::component::dock::PanelInfo::panel(json!({ "url": self.current_url() })),
-        }
-    }
-}
-
-impl gpui::component::dock::Panel for BrowserView {
-    fn tab_name(&self, _cx: &App) -> Option<SharedString> {
-        Some(SharedString::from("Browser"))
-    }
-
-    fn title(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        SharedString::from("Browser")
-    }
-
-    fn inner_padding(&self, _cx: &App) -> bool {
-        false
-    }
-
-    fn title_bar(&self, _cx: &App) -> bool {
-        false
     }
 }
 

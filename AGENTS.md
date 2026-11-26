@@ -19,7 +19,7 @@ lookup, not a typo.
 ```bash
 cargo check --all-targets          # fast feedback
 cargo build                        # the binary the driver scripts use
-cargo test                         # 68 tests, ~0.3s
+cargo test                         # 71 tests, ~0.3s
 cargo fmt --check
 cargo clippy --all-targets --all-features -- -D warnings
 ```
@@ -41,9 +41,10 @@ Get-Process lllearning -ErrorAction SilentlyContinue | Stop-Process -Force
 ```
 src/main.rs           bootstrap only: fonts, registries, session, open_window
 src/app/              the shell and its chrome
-  shell.rs            AppShell: layout, documents, close flow, session
-  dock.rs             ShellSkin: the dock's appearance (written from scratch)
-  activity_bar.rs     the icon strip beside each dock
+  shell.rs            AppShell: the arrangement, document lifecycle, close flow, session
+  side_view.rs        SideView: one dock — its activity strip and the pane on show
+  documents_view.rs   DocumentsView: the document tabs and the document on show
+  activity_bar.rs     the icon strip SideView draws
   title_bar.rs        TitleBar wrapper
   status_bar.rs       the footer
   mod.rs              init(): the one place a feature is switched on
@@ -55,6 +56,19 @@ src/icons.rs          icon glyphs as text: lucide, and the nerd font for file ty
 src/tray.rs, window.rs  tray icon and Win32 hide/show (unchanged from the demo)
 ```
 
+There is no dock crate in use. The window is two `SideView`s around a
+`DocumentsView`, placed by the shell in one `h_resizable` group of three panels,
+and the shell composes it in `render`. `src/app/dock.rs` and the whole
+`gpui::base::dock` / `gpui::component::dock` surface are gone: no splits, no
+dragging a tab between docks, no zoom.
+
+Each view owns its own chrome and its own state — a `SideView` knows which pane
+it shows and whether it is open; a `DocumentsView` knows its tabs and which one
+is active. What the shell owns is the *arrangement* and the consequences: the
+tree reveal, the `ActiveDocumentChanged` event, the debounced session write. So
+the two views take callbacks for what they cannot decide (`on_select`,
+`on_close`) and report changes rather than acting on them.
+
 ## The three seams
 
 The shell knows **only** these. If a change requires editing `src/app/shell.rs`
@@ -65,23 +79,17 @@ to add a pane or a viewer, the seam is being bypassed and that is the bug.
 1. New file in `src/panes/`, e.g. `src/panes/my_pane.rs`.
 2. Implement `PaneProvider` (`id`, `title`, `icon`, `slot`, optional `order`,
    `build`).
-3. Implement these five on the pane's view entity:
-
-   ```rust
-   impl Focusable for MyView { /* focus_handle */ }
-   impl EventEmitter<gpui::base::dock::PanelEvent> for MyView {}
-   impl gpui::base::dock::Panel for MyView {          // panel_name, dump
-   impl gpui::component::dock::Panel for MyView {     // tab_name, title,
-                                                      // inner_padding, title_bar
-   impl Render for MyView {}
-   ```
-
-4. `pub mod my_pane;` and one `register_pane(cx, Rc::new(my_pane::MyPane));`
+3. Implement `Focusable` and `Render` on the pane's view entity, and return
+   `PaneContent::new(view)` from `build`. That is the whole contract — there is
+   no dock trait to write.
+4. A pane whose contents can leave the screen (the browser's native child
+   window) returns `PaneContent { activation: Some(..), .. }` instead; the shell
+   calls it whenever the pane is shown or hidden (risk R1b).
+5. `pub mod my_pane;` and one `register_pane(cx, Rc::new(my_pane::MyPane));`
    line in `panes::register_builtins`.
 
-That is the whole cost. It is measured: a throwaway pane took one new file plus
-two lines, and `git status -- src/app` was empty. `panes/outline.rs` is a real
-example.
+`panes/outline.rs` is a real example; `panes/browser.rs` is the one with an
+activation hook.
 
 ### Adding a document viewer
 
@@ -142,32 +150,49 @@ if you use both.
 by the shell, and the lint cannot see a test-only consumer. Do not "fix" it by
 deleting public seam methods.
 
-**A panel must be wrapped in `panel_handle(...)`.** Passing a bare
-`Entity<P>` to the dock stores the entity, `PanelHandle::of` returns `None`, and
-the tab silently loses its title and close button. `PaneProvider::build` returns
-`Arc<dyn BasePanelView>` and must wrap its own view
-(`panel_handle(view)`); `documents::register_documents` wraps for you.
+**The activity strips sit outside the resizable group, and must stay there.** A
+collapsed dock is `ResizablePanel::visible(false)`, which removes it from the
+layout entirely. Put a strip inside its dock's panel and collapsing the dock
+takes away the only button that reopens it.
 
-**`DockSkin` cannot be extended.** Its shared state is crate-private and a
-second `impl DockAreaRenderer for DockSkin` is barred by the orphan rule, so
-`src/app/dock.rs` is a from-scratch renderer. It copies the construction dance
-from `DockSkin::dock_area` to get a `WeakEntity<DockArea>` — that weak handle is
-the only way a tab bar can read dock open/closed state.
+**`ResizablePanel::visible(false)` keeps the slot, so panel indices never
+shift.** The left dock is column 0, the centre 1, the right dock 2, and the
+session's saved widths are read by those indices. Never conditionally omit a
+panel element from the group; toggle `visible` instead.
 
-**A lone panel is never "draggable", so `is_panel_closable` is false for it.**
-That is why the close button is gated on `handle.closable(cx)` instead, and why
-a document asks for a `title_bar` even when it is the only tab — the tab is
-where its close button and dirty marker live.
+**`ResizablePanel::size` is the *initial* size only.** A live drag mutates
+`ResizableState`, not the element. So a saved width reaches the first frame
+through `AppShell::column_size` (which reads `SideView::saved_width`), never by
+feeding `sizes()` back into `.size()` on every render — that would fight the
+drag.
 
-**`Panel::panel_name` returns `&'static str`.** A persisted name that must round
-trip has to be interned; see `interned_name` in `dock.rs`.
+**`ResizablePanelGroup::on_resize` is not what persists a width.** The
+`ResizableState` entity emits `ResizablePanelEvent::Resized`, and the shell
+subscribes to that in `subscribe_all`. A new group needs its own subscription.
+
+**A pane whose contents live outside the element tree needs an activation
+hook.** `PaneContent::activation` is called by `SideView::activate` on every
+show/hide transition — dock toggle and pane switch. The browser's page is a
+native child window that does not leave the screen with its element (risk
+R1b), so the hook is what hides it. It is called only on a transition, never
+per frame, so it does not fight the pane's own `Render`.
+
+**Side panes are built once and cached in `SideView`.** Rebuilding on every
+switch would recreate the WebView2 — slow, and it re-arms the profile lock (risk
+R2) — and would throw away the explorer's expansion state.
 
 **A pane is built from inside `shell.update`, so it must not read the shell in
-its constructor.** `mount_side_panes` and `show_pane` both call
-`PaneProvider::build` while the shell is leased; reading it there panics with
-"cannot read AppShell while it is already being updated". Subscribe in `new`
-(the `WeakEntity` is safe to hand out) and defer the first read with
-`cx.defer_in`. `panes/outline.rs` is the worked example.
+its constructor.** `SideView::ensure` calls `PaneProvider::build` while the
+shell is leased; reading it there panics with "cannot read AppShell while it is
+already being updated". Subscribe in `new` (the `WeakEntity` is safe to hand
+out) and defer the first read with `cx.defer_in`. `panes/outline.rs` is the
+worked example.
+
+**A view reports; the shell decides.** `SideView::show` returns whether anything
+changed and `DocumentsView::remove` returns the document that replaced the
+closed one — neither writes the session, reveals a file or emits
+`ActiveDocumentChanged` itself. That keeps one place that knows what a change
+means, and keeps the views free of the shell's other seams.
 
 **Editor dirty tracking.** Subscribe to `InputEvent::Change` only. Restore text
 with `EditorState::set_value`, which emits no change event — using
@@ -200,7 +225,7 @@ into a dangling lookup.
 | # | Risk | Mitigation |
 | --- | --- | --- |
 | R1 | **WebView2 covers GPUI overlays** and cannot be clipped to a partial region on Windows. A dialog or dropdown opened over the right dock hides behind the page. | Modal dialogs render at the window root; the browser pane never anchors a dropdown. Documented as a known limitation in `README.md`. |
-| R1b | **The webview is a native child window, so it outlives the element that places it.** Collapsing the dock, switching tab or drawing the pane's error over the page leaves the page painted at its last bounds. | The pane hides and shows the native view itself: `set_active`/`on_removed` from the dock, and every render while an error is on show. Asserted by `scripts/drive-webview-hide.ps1`. |
+| R1b | **The webview is a native child window, so it outlives the element that places it.** Collapsing the dock, switching pane or drawing the pane's error over the page leaves the page painted at its last bounds. | The pane hides and shows the native view itself: `PaneContent::activation` from the shell on every show/hide transition, and every render while an error is on show. Asserted by `scripts/drive-webview-hide.ps1`. |
 | R2 | WebView2 profile lock: a second instance fails to start the webview. | The browser pane shows a "could not start" panel instead of panicking. |
 | R3 | `TreeItem::is_folder()` is `!children.is_empty()`, so an empty directory is not a folder and cannot be expanded. | Give an empty or unreadable directory a disabled placeholder child; skip it when rendering and when resolving clicks (`workspace/tree.rs`). |
 | R4 | **No native video element in GPUI.** | The `video` provider is a placeholder that explains why and offers the browser pane. The seam is unaffected — a real viewer is one provider. |
@@ -211,11 +236,11 @@ into a dangling lookup.
 | R9 | Path identity on Windows: drive-letter case, `\\?\` prefixes from `canonicalize`, symlinks. | Normalise once in `fs_util.rs`; compare case-insensitively on Windows. Unit-tested there. |
 | R10 | Editor dirty tracking vs. programmatic `set_value` — restoring a tab would mark it dirty. | Restore with `EditorState::set_value` (no change event) and subscribe to `InputEvent::Change` only. |
 | R11 | Losing unsaved work on quit or on a folder switch. | **Open.** A dirty tab's own close button prompts, but `close_all_documents` (folder switch) and the quit hook discard silently — the hook only counts the dirty files on stderr, because no window is left to ask in. Closing either gap means one prompt that walks the dirty documents before the discard. |
-| R12 | A persisted layout from a future or older build, or a panel id that no longer exists. | `SessionState.version` gate; an unknown panel survives as a placeholder; any load error falls back to the default layout. |
+| R12 | A persisted layout from a future or older build, or a pane id that no longer exists. | `SessionState.version` gate (now 2; a version 1 file was the dock's layout and is ignored); an unknown pane id falls back to the slot's first provider; a document that cannot be reopened survives as an `Unavailable` tab; any load error falls back to the default layout. |
 | R13 | Custom title bar drag/close on Windows interacts with the tray "hide on close" guard. | Reuse `tray::keep_window_on_close`; verify the window buttons and that the tray still shows and hides the window. |
 | R14 | Lucide font glyphs: baseline/centring, and a 1 MB TTF in the binary. | Render icons in a fixed-size flex box; fall back to `gpui_kit::assets::IconName` for a single icon if its metrics look off. |
 | R15 | Tree-sitter grammar features inflate build time and binary size. | Keep the grammar list in `Cargo.toml` minimal; the text viewer must still work when a grammar is missing. |
-| R16 | The dock holds `Arc<dyn PanelView>`; a tab's title and close button only reach the skin through `panel_handle`. | Always wrap panels with `panel_handle(...)`; never hand a bare `Entity<P>` to the dock. |
+| R16 | *(resolved)* The dock held `Arc<dyn PanelView>`; a tab's title and close button only reached the skin through `panel_handle`. | Resolved by removing the dock: panes are plain entities and the shell draws the tabs itself. |
 
 ## Verifying UI changes
 
@@ -240,7 +265,7 @@ To seed a session by hand:
 
 ```powershell
 $cfg = Join-Path $env:APPDATA 'lllearning'; New-Item -ItemType Directory -Force -Path $cfg
-@{ version = 1; workspace_root = "E:\Codes\lllearning" } | ConvertTo-Json |
+@{ version = 2; workspace_root = "E:\Codes\lllearning" } | ConvertTo-Json |
   Set-Content (Join-Path $cfg 'session.json') -Encoding UTF8
 ```
 

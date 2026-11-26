@@ -1,9 +1,9 @@
 //! The document seam: who can display a given file, and how to open it.
 //!
-//! The center of the shell is a dock tab group whose panels are documents. The
-//! *kind* of viewer is chosen by file type, never by the user, so
-//! opening a file means scoring every registered provider against what was
-//! sniffed from the disk and taking the best.
+//! The centre of the shell is a tab strip of documents. The *kind* of viewer is
+//! chosen by file type, never by the user, so opening a file means scoring every
+//! registered provider against what was sniffed from the disk and taking the
+//! best.
 //!
 //! Adding a viewer is one module plus one [`register_document_provider`] call.
 //!
@@ -14,9 +14,8 @@
 //! `DocumentController` reload pair exist so a viewer can be driven uniformly
 //! and so the score table can be asserted; the binary itself reaches only the
 //! parts it needs. The dead-code lint cannot tell that difference, so it is
-//! relaxed for this module rather than the API being trimmed to whatever the
+//! allowed on those items rather than the API being trimmed to whatever the
 //! current call sites happen to use.
-#![allow(dead_code)]
 
 pub mod image;
 pub mod markdown;
@@ -28,15 +27,14 @@ pub mod video;
 use std::{
     path::{Path, PathBuf},
     rc::Rc,
-    sync::Arc,
 };
 
 use gpui::{
     AnyView, App, AppContext as _, Context, Entity, EventEmitter, FocusHandle, Focusable, Global,
     IntoElement, ParentElement as _, Render, SharedString, Styled as _, Subscription, WeakEntity,
-    Window, base::dock::PanelEvent, component::dock::BasePanelView, div,
+    Window, div,
 };
-use serde_json::Value;
+use gpui_rsx::rsx;
 
 use crate::{
     app::shell::AppShell,
@@ -71,6 +69,7 @@ impl Sniff {
     }
 
     /// The extension, or `""`.
+    #[allow(dead_code)]
     pub fn ext_str(&self) -> &str {
         self.ext.as_deref().unwrap_or("")
     }
@@ -100,6 +99,7 @@ pub struct OpenContext {
     /// video placeholder's "open in browser" button is the case this exists for.
     pub shell: WeakEntity<AppShell>,
     /// The workspace, for a viewer that wants to reveal its file.
+    #[allow(dead_code)]
     pub workspace: Entity<Workspace>,
 }
 
@@ -121,13 +121,15 @@ pub trait DocumentController {
     /// Re-read the file from disk, discarding the buffer.
     fn reload_from_disk(&self, window: &mut Window, cx: &mut App);
 
-    /// The focus handle the dock focuses when this tab is selected.
+    /// The focus handle the shell focuses when this tab is selected.
     fn focus_handle(&self, cx: &App) -> FocusHandle;
 
     /// Whether the file changed on disk under an unmodified buffer.
+    #[allow(dead_code)]
     fn is_stale(&self, cx: &App) -> bool;
 
     /// Accept the on-disk version, clearing the stale marker.
+    #[allow(dead_code)]
     fn accept_disk_change(&self, window: &mut Window, cx: &mut App);
 
     /// Note that the file changed on disk while the buffer had unsaved edits.
@@ -236,6 +238,7 @@ impl Global for DocumentRegistry {}
 
 impl DocumentRegistry {
     /// Every provider, in registration order.
+    #[allow(dead_code)]
     pub fn providers(&self) -> &[Rc<dyn DocumentProvider>] {
         &self.providers
     }
@@ -286,6 +289,7 @@ pub fn provider_by_id(cx: &App, id: &str) -> Option<Rc<dyn DocumentProvider>> {
 }
 
 /// Every registered provider, in registration order.
+#[allow(dead_code)]
 pub fn providers(cx: &App) -> Vec<Rc<dyn DocumentProvider>> {
     cx.try_global::<DocumentRegistry>()
         .map(|registry| registry.providers().to_vec())
@@ -454,22 +458,7 @@ pub fn tab_title(path: &Path, dirty: bool) -> SharedString {
     }
 }
 
-/// The persisted payload for a document panel.
-///
-/// Both halves are needed: the path says which file, the provider says which
-/// viewer, and a restart rebuilds the panel through the registered provider.
-pub fn document_payload(path: &Path, provider_id: &str) -> Value {
-    serde_json::json!({ "path": path.to_string_lossy(), "provider": provider_id })
-}
-
-/// Read a document payload back into its path and provider id.
-pub fn parse_document_payload(value: &Value) -> Option<(PathBuf, String)> {
-    let path = value.get("path")?.as_str()?;
-    let provider = value.get("provider")?.as_str()?;
-    Some((PathBuf::from(path), provider.to_owned()))
-}
-
-/// A dock panel that shows one document.
+/// A tab that shows one document.
 ///
 /// The viewer inside is type-erased through [`DocumentController`], so the shell
 /// can hold a list of these without knowing what each one is.
@@ -482,18 +471,16 @@ pub struct DocumentPanel {
     _watch: Option<Subscription>,
 }
 
-impl EventEmitter<PanelEvent> for DocumentPanel {}
+impl EventEmitter<DocumentEvent> for DocumentPanel {}
 
 /// The panel's own event: its contents changed.
 ///
-/// This is what lets a pane watch "whatever the user is editing" without
-/// knowing which viewer is behind it. The panel re-broadcasts its viewer's
-/// `notify` because a subscriber can only subscribe to a type it can name, and
-/// the viewer's type is erased by the time the shell holds it.
+/// This is what lets a pane watch "whatever the user is editing" without knowing
+/// which viewer is behind it. The panel re-broadcasts its viewer's `notify`
+/// because a subscriber can only subscribe to a type it can name, and the
+/// viewer's type is erased by the time the shell holds it.
 #[derive(Clone, Copy, Debug)]
 pub struct DocumentEvent;
-
-impl EventEmitter<DocumentEvent> for DocumentPanel {}
 
 impl Focusable for DocumentPanel {
     fn focus_handle(&self, cx: &App) -> FocusHandle {
@@ -502,7 +489,7 @@ impl Focusable for DocumentPanel {
 }
 
 impl DocumentPanel {
-    /// Open `path` with the best provider, and wrap it as a dock panel.
+    /// Open `path` with the best provider.
     ///
     /// Returns `None` when no provider can show the file, which the caller
     /// reports rather than leaving an empty tab behind.
@@ -575,94 +562,29 @@ impl DocumentPanel {
 
 impl Render for DocumentPanel {
     fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        div().size_full().child(self.view.clone())
+        let view = self.view.clone();
+        rsx! { <div class="size-full">{view}</div> }
     }
 }
 
-impl gpui::base::dock::Panel for DocumentPanel {
-    fn panel_name(&self) -> &'static str {
-        "document"
-    }
-
-    fn dump(&self, _cx: &App) -> gpui::component::dock::PanelState {
-        gpui::component::dock::PanelState {
-            panel_name: "document".to_owned(),
-            children: Vec::new(),
-            info: gpui::component::dock::PanelInfo::panel(document_payload(
-                &self.path,
-                self.provider_id,
-            )),
-        }
-    }
-}
-
-impl gpui::component::dock::Panel for DocumentPanel {
-    fn tab_name(&self, cx: &App) -> Option<SharedString> {
-        Some(self.tab_title(cx))
-    }
-
-    fn title(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        self.tab_title(cx)
-    }
-
-    fn inner_padding(&self, _cx: &App) -> bool {
-        false
-    }
-
-    fn title_bar(&self, _cx: &App) -> bool {
-        // A document always wants its tab, even as the only one: the tab is the
-        // only place its close button and its dirty marker live. Side panes
-        // answer `false` here because they carry their own toolbars instead.
-        true
-    }
-}
-
-/// Rebuild a document panel from its persisted payload.
+/// The stand-in for a document that could not be reopened.
 ///
-/// This is what makes a restart restore open tabs: the dock's registry calls it
-/// through the builder [`register_documents`] installs.
-pub fn restore_document(
-    payload: &Value,
-    window: &mut Window,
-    cx: &mut App,
-) -> Option<Arc<dyn BasePanelView>> {
-    let (path, _provider_id) = parse_document_payload(payload)?;
-    let handles = crate::panes::ShellHandles::get(cx);
-    let panel = DocumentPanel::open(path, handles.shell, handles.workspace, window, cx)?;
-    Some(gpui::component::dock::panel_handle(panel))
-}
-
-/// Register the dock's builder for document panels.
-pub fn register_documents(cx: &mut App) {
-    gpui::component::dock::register_panel(cx, "document", |context, window, cx| {
-        let payload = match context.info() {
-            gpui::component::dock::PanelInfo::Panel(value) => value.clone(),
-            _ => Value::Null,
-        };
-        restore_document(&payload, window, cx).unwrap_or_else(|| {
-            // An unknown payload means the file or provider is gone. A
-            // placeholder keeps the layout intact instead of dropping a tab.
-            gpui::component::dock::panel_handle(cx.new(|cx| MissingDocument::new(payload, cx)))
-        })
-    });
-}
-
-/// The stand-in for a document panel that could not be rebuilt.
+/// A restored tab whose file is gone, or whose viewer is missing, keeps its tab
+/// and says so. Dropping it instead would read as a bug: the session named it,
+/// so the user expects to see it.
 pub struct MissingDocument {
-    payload: Value,
+    path: PathBuf,
     focus_handle: FocusHandle,
 }
 
 impl MissingDocument {
-    fn new(payload: Value, cx: &mut Context<Self>) -> Self {
+    fn new(path: PathBuf, cx: &mut Context<Self>) -> Self {
         Self {
-            payload,
+            path,
             focus_handle: cx.focus_handle(),
         }
     }
 }
-
-impl EventEmitter<PanelEvent> for MissingDocument {}
 
 impl Focusable for MissingDocument {
     fn focus_handle(&self, _: &App) -> FocusHandle {
@@ -672,41 +594,70 @@ impl Focusable for MissingDocument {
 
 impl Render for MissingDocument {
     fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        let name = parse_document_payload(&self.payload)
-            .map(|(path, _)| fs_util::file_name_of(&path))
-            .unwrap_or_else(|| "an unknown file".to_owned());
-        div()
-            .size_full()
-            .flex()
-            .items_center()
-            .justify_center()
-            .child(SharedString::from(format!(
-                "{name} could not be reopened; its viewer is not available."
-            )))
-    }
-}
+        let name = fs_util::file_name_of(&self.path);
+        let message = SharedString::from(format!(
+            "{name} could not be reopened; its viewer is not available."
+        ));
 
-impl gpui::base::dock::Panel for MissingDocument {
-    fn panel_name(&self) -> &'static str {
-        "document"
-    }
-
-    fn dump(&self, _cx: &App) -> gpui::component::dock::PanelState {
-        gpui::component::dock::PanelState {
-            panel_name: "document".to_owned(),
-            children: Vec::new(),
-            info: gpui::component::dock::PanelInfo::panel(self.payload.clone()),
+        rsx! {
+            <div class="flex size-full items-center justify-center">
+                {message}
+            </div>
         }
     }
 }
 
-impl gpui::component::dock::Panel for MissingDocument {
-    fn tab_name(&self, _cx: &App) -> Option<SharedString> {
-        Some(SharedString::from("Unavailable"))
+/// Drives [`MissingDocument`] like any other viewer, so the shell holds it the
+/// same way it holds a real one.
+struct MissingController {
+    view: Entity<MissingDocument>,
+}
+
+impl DocumentController for MissingController {
+    fn is_dirty(&self, _cx: &App) -> bool {
+        false
     }
 
-    fn title(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        SharedString::from("Unavailable")
+    fn save(&self, _window: &mut Window, _cx: &mut App) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn focus(&self, window: &mut Window, cx: &mut App) {
+        self.view.update(cx, |view, cx| {
+            view.focus_handle.focus(window, cx);
+        });
+    }
+
+    fn reload_from_disk(&self, _window: &mut Window, cx: &mut App) {
+        self.view.update(cx, |_, cx| cx.notify());
+    }
+
+    fn focus_handle(&self, cx: &App) -> FocusHandle {
+        self.view.read(cx).focus_handle(cx)
+    }
+
+    fn is_stale(&self, _cx: &App) -> bool {
+        false
+    }
+
+    fn accept_disk_change(&self, _window: &mut Window, _cx: &mut App) {}
+
+    fn language(&self, _cx: &App) -> Option<SharedString> {
+        Some(SharedString::from("Unavailable"))
+    }
+}
+
+impl DocumentPanel {
+    /// A tab for a file that could not be reopened.
+    pub fn missing(path: PathBuf, cx: &mut App) -> Entity<Self> {
+        let view = cx.new(|cx| MissingDocument::new(path.clone(), cx));
+        cx.new(|_| Self {
+            path,
+            provider_id: "missing",
+            controller: Rc::new(MissingController { view: view.clone() }),
+            view: view.into(),
+            _watch: None,
+        })
     }
 }
 
@@ -797,25 +748,6 @@ mod tests {
         assert!(registry.by_id("text").is_some());
         assert!(registry.by_id("image").is_some());
         assert!(registry.by_id("nope").is_none());
-    }
-
-    #[test]
-    fn a_document_payload_round_trips() {
-        let path = Path::new("/work/notes.md");
-        let payload = document_payload(path, "markdown");
-        let (back_path, back_provider) =
-            parse_document_payload(&payload).expect("the payload parses");
-        assert_eq!(back_path, path);
-        assert_eq!(back_provider, "markdown");
-    }
-
-    #[test]
-    fn a_malformed_payload_is_rejected() {
-        assert!(parse_document_payload(&serde_json::json!({})).is_none());
-        assert!(parse_document_payload(&serde_json::json!({"path": "a"})).is_none());
-        assert!(
-            parse_document_payload(&serde_json::json!({"path": "a", "provider": "text"})).is_some()
-        );
     }
 
     #[test]

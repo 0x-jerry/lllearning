@@ -4,23 +4,21 @@
 //! lazily-loaded tree. Expanding a directory asks the workspace to read it;
 //! clicking a file asks the shell to open it.
 
-use std::sync::Arc;
-
 use gpui::base::TreeEvent;
 use gpui::component::{
     ActiveTheme as _, Sizable as _,
     button::{Button, ButtonVariants as _},
 };
 use gpui::{
-    App, AppContext as _, Context, Entity, EventEmitter, FocusHandle, Focusable, IntoElement,
-    ParentElement as _, Render, SharedString, Styled as _, Subscription, Window, div, px,
+    App, AppContext as _, Context, Entity, FocusHandle, Focusable, IntoElement, ParentElement as _,
+    Render, SharedString, Styled as _, Subscription, Window, div, px,
 };
 use gpui_rsx::rsx;
 
 use crate::{
     app::shell::AppShell,
     icons,
-    panes::{PaneContext, PaneProvider, PaneSlot},
+    panes::{PaneContent, PaneContext, PaneProvider, PaneSlot},
     workspace::{Workspace, fs_util},
 };
 
@@ -48,15 +46,9 @@ impl PaneProvider for ExplorerPane {
         0
     }
 
-    fn build(
-        &self,
-        ctx: PaneContext,
-        window: &mut Window,
-        cx: &mut App,
-    ) -> Arc<dyn gpui::component::dock::BasePanelView> {
-        let _ = ctx.saved;
+    fn build(&self, ctx: PaneContext, window: &mut Window, cx: &mut App) -> PaneContent {
         let view = cx.new(|cx| ExplorerView::new(ctx.workspace, ctx.shell, window, cx));
-        gpui::component::dock::panel_handle(view)
+        PaneContent::new(view)
     }
 }
 
@@ -140,36 +132,6 @@ impl ExplorerView {
 impl Focusable for ExplorerView {
     fn focus_handle(&self, _: &App) -> FocusHandle {
         self.focus_handle.clone()
-    }
-}
-
-impl EventEmitter<gpui::base::dock::PanelEvent> for ExplorerView {}
-
-impl gpui::base::dock::Panel for ExplorerView {
-    fn panel_name(&self) -> &'static str {
-        "explorer"
-    }
-
-    fn dump(&self, _cx: &App) -> gpui::component::dock::PanelState {
-        gpui::component::dock::PanelState::new("explorer")
-    }
-}
-
-impl gpui::component::dock::Panel for ExplorerView {
-    fn tab_name(&self, _cx: &App) -> Option<SharedString> {
-        Some(SharedString::from("Explorer"))
-    }
-
-    fn title(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        SharedString::from("Explorer")
-    }
-
-    fn inner_padding(&self, _cx: &App) -> bool {
-        false
-    }
-
-    fn title_bar(&self, _cx: &App) -> bool {
-        false
     }
 }
 
