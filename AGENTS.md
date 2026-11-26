@@ -198,14 +198,23 @@ It must be called outside a draw — opening a window paints its first frame bef
 it returns, so the shell defers it with `cx.defer_in` — and the returned `Task`
 must be kept, or the popup has nowhere to send its answer.
 
-**A popup is shown before it can be adopted, so shedding its taskbar button takes
-a hide/show.** `open_window` shows the window inside `Window::new` and only then
-calls the build closure, and the window was created with `WS_EX_APPWINDOW` and no
-owner. So by the time `window::adopt_owner` runs there is already a taskbar button
-for it, and Windows does not re-read a visible window's taskbar eligibility —
-clearing the style alone leaves the button there forever. `adopt_owner` therefore
-hides, restyles, sets the owner and shows again. Nothing has painted at that
-point, so it is not a flicker. Do not "simplify" that into a restyle in place.
+**A popup is shown before it can be adopted, so a taskbar button is shed with a
+hide/show.** `open_window` shows the window inside `Window::new` and only then
+calls the build closure, and a window created as `WindowKind::Normal` is born with
+`WS_EX_APPWINDOW` and no owner. So by the time `window::adopt_owner` runs there is
+already a taskbar button for it, and Windows does not re-read a visible window's
+taskbar eligibility — clearing the style alone leaves the button there forever.
+`adopt_owner` therefore hides, restyles, sets the owner and shows again, and only
+when the window is not already a tool window.
+
+**A hide/show is a deactivation, and anything watching activation sees it.** The
+context menu dismisses itself when its window loses the activation, so the round
+trip above would close it on the frame it opened. That is why the menu asks for
+`WindowKind::PopUp` — born a tool window, so no round trip happens and no
+deactivation is queued. Its observer is armed from the window's current state
+rather than from the first activation event, because a window created shown and
+active may never report the activation it arrived with, and a menu that is never
+armed never leaves.
 
 **A popup window is owned on the platform, but nothing makes it follow its owner
 off the screen.** The tray's Hide and the close-to-tray guard take the owner away
@@ -281,6 +290,7 @@ into a dangling lookup.
 | R14 | Lucide font glyphs: baseline/centring, and a 1 MB TTF in the binary. | Render icons in a fixed-size flex box; fall back to `gpui_kit::assets::IconName` for a single icon if its metrics look off. |
 | R15 | Tree-sitter grammar features inflate build time and binary size. | Keep the grammar list in `Cargo.toml` minimal; the text viewer must still work when a grammar is missing. |
 | R16 | *(resolved)* The dock held `Arc<dyn PanelView>`; a tab's title and close button only reached the skin through `panel_handle`. | Resolved by removing the dock: panes are plain entities and the shell draws the tabs itself. |
+| R18 | **A popup window shows a taskbar button, and hiding it to remove the button deactivates it.** A window created as `Normal` is born with `WS_EX_APPWINDOW` and is already shown when the build closure runs; clearing the style on a visible window leaves the button, and the hide/show that does clear it is a deactivation, which a menu watching activation reads as a click outside. | The menu is created as `WindowKind::PopUp` (a tool window from birth, no round trip); the prompt needs the round trip and has no activation observer. See the two traps above. |
 | R17 | **An in-window dialog or popover is covered by the webview.** `window.open_dialog` and an anchored popover draw into the main window's element tree, under the browser pane's native child window — the same cause as R1, which is why R1 alone did not cover it. | Dialogs and context menus are their own window (`app/popup/`), owned by the caller and reporting their answer back. Toasts and the tab bar's own `menu` still draw in-window, so R1 still governs them. |
 
 ## Verifying UI changes

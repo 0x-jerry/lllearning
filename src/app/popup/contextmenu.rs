@@ -11,6 +11,9 @@
 //! desktop does: a click anywhere else is the dismissal, and it needs no
 //! hit-testing of its own.
 
+use std::cell::Cell;
+use std::rc::Rc;
+
 use gpui::component::ActiveTheme as _;
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
@@ -153,12 +156,10 @@ impl<T: Clone + 'static> Popup for ContextMenu<T> {
                 size,
             ))),
             window_min_size: Some(size),
-            // Windows takes its ownership from the Win32 call the host makes.
-            kind: if cfg!(target_os = "windows") {
-                WindowKind::Normal
-            } else {
-                WindowKind::PopUp
-            },
+            // A tool window from birth: it has no taskbar button and no Alt-Tab
+            // entry, so none has to be taken away after it is shown. Windows takes
+            // its ownership from the Win32 call the host makes.
+            kind: WindowKind::PopUp,
             is_resizable: false,
             is_minimizable: false,
             is_movable: false,
@@ -178,8 +179,15 @@ impl<T: Clone + 'static> Popup for ContextMenu<T> {
         // A click anywhere else lands on another window and takes the activation
         // with it, which is the dismissal every other menu on the desktop has.
         // No hit-testing of our own, and it covers a click on the owner too.
-        self._activation = Some(cx.observe_window_activation(window, |_, window, _| {
-            if !window.is_window_active() {
+        //
+        // Armed from the state the window is already in: it is created shown and
+        // active, so the activation it arrived with may never be reported, and a
+        // menu that is not armed never leaves.
+        let armed = Rc::new(Cell::new(window.is_window_active()));
+        self._activation = Some(cx.observe_window_activation(window, move |_, window, _| {
+            if window.is_window_active() {
+                armed.set(true);
+            } else if armed.get() {
                 window.remove_window();
             }
         }));

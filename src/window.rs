@@ -106,13 +106,18 @@ pub(crate) fn adopt_owner(window: &mut Window, owner: Option<isize>, modal: bool
     // SAFETY: both handles were obtained from live windows and are used only to
     // set styles and enable state, not to dereference.
     unsafe {
-        // The platform has already shown the window by now, and it was created
-        // with `WS_EX_APPWINDOW` and no owner, so it has a taskbar button. Taking
-        // that style away while the window is visible leaves the button behind:
-        // Windows only re-reads a window's taskbar eligibility when it is hidden
-        // and shown again. Nothing has painted yet, so this is not a flicker.
-        ShowWindow(hwnd, SW_HIDE);
+        // The platform has already shown the window by now, and a window created
+        // as `Normal` was born with `WS_EX_APPWINDOW` and no owner, so it has a
+        // taskbar button. Taking that style away while the window is visible
+        // leaves the button behind: Windows only re-reads a window's taskbar
+        // eligibility when it is hidden and shown again. Nothing has painted yet,
+        // so this is not a flicker. A window born as `PopUp` is already a tool
+        // window, and hiding it there would cost a deactivation for nothing.
         let style = GetWindowLongPtrW(hwnd, GWL_EXSTYLE) as u32;
+        let tool_window = style & WS_EX_TOOLWINDOW != 0;
+        if !tool_window {
+            ShowWindow(hwnd, SW_HIDE);
+        }
         let style = (style & !WS_EX_APPWINDOW) | WS_EX_TOOLWINDOW;
         SetWindowLongPtrW(hwnd, GWL_EXSTYLE, style as isize);
         SetWindowPos(
@@ -127,7 +132,9 @@ pub(crate) fn adopt_owner(window: &mut Window, owner: Option<isize>, modal: bool
         // The owner is set through the parent slot, which for a window without
         // `WS_CHILD` means "owned by" rather than "contained in".
         SetWindowLongPtrW(hwnd, GWLP_HWNDPARENT, owner);
-        ShowWindow(hwnd, SW_SHOW);
+        if !tool_window {
+            ShowWindow(hwnd, SW_SHOW);
+        }
         if modal {
             EnableWindow(owner as _, 0);
         }
