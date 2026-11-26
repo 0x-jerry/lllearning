@@ -253,8 +253,7 @@ pub mod refused {
     };
     use gpui::{
         App, AppContext as _, Context, Entity, EventEmitter, FocusHandle, Focusable, IntoElement,
-        ParentElement as _, Render, SharedString, Styled as _, Window, div,
-        prelude::FluentBuilder as _, px,
+        ParentElement as _, Render, SharedString, Styled as _, Window, div, px,
     };
     use gpui_rsx::rsx;
 
@@ -379,12 +378,6 @@ pub mod refused {
             }
             .into_any_element()
         }
-    }
-
-    /// Keeps the `px`/`div`/`when` imports honest for the rsx expansion.
-    #[allow(dead_code)]
-    fn unused() -> impl IntoElement {
-        div().px(px(1.)).when(true, |this| this)
     }
 }
 
