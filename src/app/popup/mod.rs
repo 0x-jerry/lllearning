@@ -92,12 +92,19 @@ where
     V: Popup<Answer = T> + 'static,
     T: 'static,
 {
+    let owner_window = owner.window_handle().window_id();
+    // A menu is a place, not a pile: right-clicking a second tab must move the
+    // menu rather than leave the first one behind. A prompt is the opposite —
+    // its owner is disabled, so there is never a second one to collide with.
+    if !modal {
+        close_for(owner_window, cx);
+    }
+
     let (sender, receiver) = gpui::base::async_util::unbounded::<T>();
     // A dismissed popup never sends, so the channel closes instead and this
     // resolves to `None` with no extra plumbing.
     let answered = cx.spawn(async move |_| receiver.recv().await.ok());
 
-    let owner_window = owner.window_handle().window_id();
     let host = Host {
         sender: Some(sender),
         owner: owner_native,

@@ -101,6 +101,7 @@ pub fn open<T: Clone + 'static>(
         focus: None,
         items,
         host,
+        _activation: None,
         origin,
         at,
         width,
@@ -112,7 +113,8 @@ struct ContextMenu<T> {
     focus: Option<FocusHandle>,
     items: Vec<MenuItem<T>>,
     host: Host<T>,
-    /// The owner, for the registry the hide paths walk.
+    /// Dropping this unsubscribes, so the menu leaves no observer behind.
+    _activation: Option<gpui::Subscription>,
     /// The owner's top-left on screen, so the menu lands under the pointer.
     origin: Point<Pixels>,
     at: Point<Pixels>,
@@ -173,6 +175,14 @@ impl<T: Clone + 'static> Popup for ContextMenu<T> {
     fn opened(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let focus = cx.focus_handle();
         self.focus = Some(focus.clone());
+        // A click anywhere else lands on another window and takes the activation
+        // with it, which is the dismissal every other menu on the desktop has.
+        // No hit-testing of our own, and it covers a click on the owner too.
+        self._activation = Some(cx.observe_window_activation(window, |_, window, _| {
+            if !window.is_window_active() {
+                window.remove_window();
+            }
+        }));
         window.focus(&focus, cx);
         window.activate_window();
     }
