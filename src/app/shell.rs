@@ -767,11 +767,7 @@ impl Render for AppShell {
         let left_providers = panes::panes_for(cx, PaneSlot::Left);
         let right_providers = panes::panes_for(cx, PaneSlot::Right);
 
-        let title = title_bar::render(
-            cx.listener(|this, _, window, cx| this.pick_folder(window, cx)),
-            cx.listener(|this, _, window, cx| this.refresh_tree(window, cx)),
-            cx,
-        );
+        let title = title_bar::render();
         let status = status_bar::render(self, cx);
 
         let left_strip = ActivityBar::new(PaneSlot::Left, left_shown, left_providers)

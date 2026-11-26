@@ -2,69 +2,45 @@
 //!
 //! `gpui_component::TitleBar` already owns the window drag, the double-click
 //! zoom and the native window controls, so this only supplies the app mark on
-//! the left and the folder actions on the right.
+//! the left. The folder actions live on the explorer's own toolbar, which is
+//! the pane they act on.
 
-use gpui::component::{
-    ActiveTheme as _, Sizable as _, TitleBar,
-    button::{Button, ButtonVariants as _},
-};
+use std::sync::{Arc, OnceLock};
+
+use gpui::component::TitleBar;
 use gpui::{
-    AnyElement, App, IntoElement, ParentElement as _, SharedString, Styled as _, Window, div, px,
+    AnyElement, Image, ImageFormat, IntoElement, ParentElement as _, Styled as _, div, img, px,
 };
 use gpui_rsx::rsx;
 
-use crate::icons;
-
-/// The app mark: a small square in the accent colour, then the name.
-fn app_mark(accent: gpui::Hsla) -> impl IntoElement {
-    rsx! {
-        <div class="flex items-center gap-2">
-            <div w={px(12.)} h={px(12.)} rounded={px(3.)} bg={accent} />
-            <div class="text-sm">{"lllearning"}</div>
-        </div>
-    }
+/// The app icon, decoded once for the life of the process.
+///
+/// It is embedded rather than loaded through the asset source so the mark needs
+/// no asset path and no `img` resource lookup: the bytes are already in the
+/// binary, and the decoder is keyed on their hash, so one `Arc` serves every
+/// frame.
+fn logo() -> Arc<Image> {
+    static LOGO: OnceLock<Arc<Image>> = OnceLock::new();
+    LOGO.get_or_init(|| {
+        Arc::new(Image::from_bytes(
+            ImageFormat::Png,
+            include_bytes!("../../assets/icon.png").to_vec(),
+        ))
+    })
+    .clone()
 }
 
-/// The title bar, with the folder actions the shell wires up.
-///
-/// Returns an owned element rather than an `impl IntoElement`, so the caller can
-/// keep building its own tree with `cx` after this returns.
-pub fn render(
-    on_pick: impl Fn(&gpui::ClickEvent, &mut Window, &mut App) + 'static,
-    on_refresh: impl Fn(&gpui::ClickEvent, &mut Window, &mut App) + 'static,
-    cx: &App,
-) -> AnyElement {
-    let accent = cx.theme().primary;
-    let mark = app_mark(accent);
+/// The title bar: the app icon, then the app name.
+pub fn render() -> AnyElement {
+    let icon = logo();
 
     rsx! {
         <TitleBar base={TitleBar::new()}>
-            {mark}
-            <div class="flex items-center gap-1">
-                <Button("title-open-folder")
-                    ghost
-                    xsmall
-                    tooltip={"Change folder…"}
-                    onClick={on_pick}
-                >
-                    {icons::icon(lucide_icons::Icon::FolderOpen, 14.)}
-                </Button>
-                <Button("title-refresh")
-                    ghost
-                    xsmall
-                    tooltip={"Refresh the tree"}
-                    onClick={on_refresh}
-                >
-                    {icons::icon(lucide_icons::Icon::RefreshCw, 14.)}
-                </Button>
+            <div class="flex items-center gap-2">
+                <img src={icon} w={px(16.)} h={px(16.)} />
+                <div class="text-sm">{"lllearning"}</div>
             </div>
         </TitleBar>
     }
     .into_any_element()
-}
-
-/// Keeps the `SharedString` import honest until a title needs one.
-#[allow(dead_code)]
-fn label(text: &str) -> SharedString {
-    SharedString::from(text.to_owned())
 }
