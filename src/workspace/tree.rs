@@ -262,6 +262,11 @@ impl DirTree {
 
     /// The tree, ready for `TreeState::set_items`.
     ///
+    /// The root's *children* are the top level, not the root: the folder is
+    /// already named in the toolbar above the tree, and a single always-open
+    /// row around everything would cost a level of indentation and a row that
+    /// can never be clicked away.
+    ///
     /// Each directory that has been read gets its children as `TreeItem`s; an
     /// expanded directory is built with `expanded(true)` so the tree shows its
     /// contents. Directories not yet read appear as leaves, which is what makes
@@ -270,7 +275,21 @@ impl DirTree {
         let Some(root) = &self.root else {
             return Vec::new();
         };
-        vec![self.item_for(root)]
+        self.children_of(root)
+    }
+
+    /// The `TreeItem`s for a directory's listing, empty if it was never read.
+    fn children_of(&self, dir: &Path) -> Vec<TreeItem> {
+        self.loaded
+            .get(dir)
+            .map(|loaded| {
+                loaded
+                    .children
+                    .iter()
+                    .map(|entry| self.item_for(&entry.path))
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
     /// Build the `TreeItem` for `path`, recursing only into open directories.
@@ -293,11 +312,7 @@ impl DirTree {
 
         match self.loaded.get(path) {
             Some(loaded) if !loaded.children.is_empty() => {
-                let children: Vec<TreeItem> = loaded
-                    .children
-                    .iter()
-                    .map(|entry| self.item_for(&entry.path))
-                    .collect();
+                let children = self.children_of(path);
                 item.children(children).expanded(true)
             }
             // An open directory with nothing in it still needs the placeholder,
@@ -396,7 +411,7 @@ mod tests {
         tree.set_root(dir.clone()).unwrap();
         let items = tree.items();
 
-        let sub = &items[0].children[0];
+        let sub = &items[0];
         assert_eq!(sub.label.as_ref(), "sub");
         assert!(
             sub.is_folder(),
@@ -421,7 +436,7 @@ mod tests {
         tree.expand(&dir.join("empty"));
         let items = tree.items();
 
-        let empty = &items[0].children[0];
+        let empty = &items[0];
         assert!(
             empty.is_folder(),
             "an expanded empty directory stays a folder"
@@ -464,13 +479,11 @@ mod tests {
 
         let first = tree.items();
         let second = tree.items();
-        let open = first[0]
-            .children
+        let open = first
             .iter()
             .find(|item| item.label.as_ref() == "open")
             .unwrap();
-        let open_again = second[0]
-            .children
+        let open_again = second
             .iter()
             .find(|item| item.label.as_ref() == "open")
             .unwrap();
@@ -526,7 +539,7 @@ mod tests {
 
         tree.load_children(&dir.join("d"));
         let items = tree.items();
-        let d = &items[0].children[0];
+        let d = &items[0];
         let names: Vec<&str> = d.children.iter().map(|item| item.label.as_ref()).collect();
         assert_eq!(names, vec!["one.txt", "two.txt"]);
 

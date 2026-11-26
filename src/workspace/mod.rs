@@ -450,8 +450,8 @@ mod tests {
         let mut tree = crate::workspace::tree::DirTree::new();
         tree.set_root(first.clone()).expect("first root");
         assert_eq!(tree.root(), Some(first.as_path()));
-        let first_names: Vec<String> = tree.items()[0]
-            .children
+        let first_names: Vec<String> = tree
+            .items()
             .iter()
             .map(|item| item.label.to_string())
             .collect();
@@ -460,8 +460,8 @@ mod tests {
         tree.set_root(second.clone()).expect("second root");
         assert_eq!(tree.root(), Some(second.as_path()));
 
-        let names: Vec<String> = tree.items()[0]
-            .children
+        let names: Vec<String> = tree
+            .items()
             .iter()
             .map(|item| item.label.to_string())
             .collect();
