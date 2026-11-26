@@ -509,7 +509,7 @@ impl Render for BrowserView {
                             </div>
                         }
                     } else if let Some(webview) = webview {
-                        rsx! { <div class="size-full">{webview}</div> }
+                        rsx! { <div class="size-full" pl={px(5.)}>{webview}</div> }
                     } else {
                         rsx! {
                             <div class="flex flex-col size-full items-center justify-center gap-2 p-4">
