@@ -1,9 +1,9 @@
 //! The image viewer.
 //!
 //! A read-only document: there is nothing to edit and nothing to save, so its
-//! controller reports itself clean and every mutation is a no-op. The zoom is a
-//! local scale factor over `ObjectFit::Contain`, with a checkerboard behind
-//! transparent images so a PNG with alpha is legible in both themes.
+//! controller reports itself clean and every mutation is a no-op. The image is
+//! drawn at its own pixel size and the wheel scales it; the pane clips whatever
+//! no longer fits rather than shrinking the image to the pane.
 
 use std::{
     path::{Path, PathBuf},
@@ -15,8 +15,9 @@ use gpui::component::{
     button::{Button, ButtonVariants as _},
 };
 use gpui::{
-    App, AppContext as _, Context, Entity, EventEmitter, FocusHandle, Focusable, IntoElement,
-    ObjectFit, ParentElement as _, Render, Styled as _, StyledImage as _, Window, div, img, px,
+    App, AppContext as _, Context, Entity, EventEmitter, FocusHandle, Focusable, ImgResourceLoader,
+    InteractiveElement as _, IntoElement, ObjectFit, ParentElement as _, Render, Resource,
+    ScrollDelta, ScrollEvent, Styled as _, StyledImage as _, Window, div, img, px,
 };
 use gpui_rsx::rsx;
 
@@ -93,23 +94,30 @@ impl DocumentController for ImageController {
 pub struct ImageView {
     path: PathBuf,
     focus_handle: FocusHandle,
-    /// 1.0 is fit-to-pane; the buttons step through a small ladder.
+    /// 1.0 is the image's own pixel size; the buttons and the wheel scale it.
     zoom: f32,
-    /// The image's pixel size, once it has been read.
-    dimensions: Option<(u32, u32)>,
 }
 
 /// The zoom ladder the buttons step through.
 const ZOOM_STEPS: [f32; 5] = [0.5, 0.75, 1.0, 1.5, 2.0];
 
+/// What one wheel line multiplies the zoom by. Multiplicative so a trackpad's
+/// many small deltas feel like a mouse's few large ones.
+const ZOOM_PER_LINE: f32 = 1.1;
+
+/// One wheel line in pixels, for platforms that report a pixel delta.
+const PIXELS_PER_LINE: f32 = 40.;
+
+/// The range the wheel can reach, so the image cannot be scrolled out of sight.
+const MIN_ZOOM: f32 = 0.1;
+const MAX_ZOOM: f32 = 8.;
+
 impl ImageView {
     fn new(path: PathBuf, cx: &mut Context<Self>) -> Self {
-        let dimensions = image_dimensions(&path);
         Self {
             path,
             focus_handle: cx.focus_handle(),
             zoom: 1.0,
-            dimensions,
         }
     }
 
@@ -123,8 +131,7 @@ impl ImageView {
             .copied()
             .find(|step| *step > self.zoom + f32::EPSILON)
             .unwrap_or(*ZOOM_STEPS.last().unwrap());
-        self.zoom = next;
-        cx.notify();
+        self.set_zoom(next, cx);
     }
 
     fn zoom_out(&mut self, cx: &mut Context<Self>) {
@@ -134,18 +141,36 @@ impl ImageView {
             .copied()
             .find(|step| *step < self.zoom - f32::EPSILON)
             .unwrap_or(ZOOM_STEPS[0]);
-        self.zoom = next;
-        cx.notify();
+        self.set_zoom(next, cx);
     }
 
     fn reset_zoom(&mut self, cx: &mut Context<Self>) {
-        self.zoom = 1.0;
+        self.set_zoom(1.0, cx);
+    }
+
+    fn set_zoom(&mut self, zoom: f32, cx: &mut Context<Self>) {
+        self.zoom = zoom.clamp(MIN_ZOOM, MAX_ZOOM);
         cx.notify();
     }
 
-    fn dimensions_label(&self) -> String {
-        match self.dimensions {
-            Some((width, height)) => format!("{width} × {height}"),
+    /// Scale with the wheel. The event is consumed so a list around the viewer
+    /// does not scroll while the image zooms.
+    fn on_scroll(&mut self, event: &ScrollEvent, cx: &mut Context<Self>) {
+        let lines = match event.delta {
+            ScrollDelta::Lines(delta) => delta.y,
+            ScrollDelta::Pixels(delta) => f32::from(delta.y) / PIXELS_PER_LINE,
+        };
+        if lines == 0. {
+            return;
+        }
+        cx.stop_propagation();
+        let zoom = self.zoom * ZOOM_PER_LINE.powf(lines);
+        self.set_zoom(zoom, cx);
+    }
+
+    fn dimensions_label(size: Option<(f32, f32)>) -> String {
+        match size {
+            Some((width, height)) => format!("{} × {}", width.round(), height.round()),
             None => "unknown size".to_owned(),
         }
     }
@@ -160,11 +185,12 @@ impl Focusable for ImageView {
 impl EventEmitter<()> for ImageView {}
 
 impl Render for ImageView {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let path = self.path.clone();
         let zoom = self.zoom;
         let zoom_label = format!("{:.0}%", zoom * 100.);
-        let dimensions = self.dimensions_label();
+        let size = image_size(window, &path, cx);
+        let dimensions = Self::dimensions_label(size);
         let border = cx.theme().border;
         let muted = cx.theme().muted;
         let muted_foreground = cx.theme().muted_foreground;
@@ -197,34 +223,51 @@ impl Render for ImageView {
                     <div class="text-xs" text_color={muted_foreground}>{dimensions}</div>
                 </div>
                 <div
+                    id="image-canvas"
                     class="flex flex-row flex-1 min-h-0 overflow-hidden items-center justify-center"
                     bg={muted}
+                    onScroll={cx.listener(|this, event: &ScrollEvent, _, cx| {
+                        this.on_scroll(event, cx)
+                    })}
                 >
-                    <img
-                        src={path}
-                        objectFit={ObjectFit::Contain}
-                        w={px(1024. * zoom)}
-                        h={px(1024. * zoom)}
-                        max_w_full
-                        max_h_full
-                    />
+                    {match size {
+                        Some((width, height)) => rsx! {
+                            <img
+                                src={path}
+                                objectFit={ObjectFit::Fill}
+                                w={px(width * zoom)}
+                                h={px(height * zoom)}
+                                flex_none
+                            />
+                        },
+                        // A format with no readable header (SVG) keeps its own
+                        // size and cannot be scaled: there is nothing to
+                        // multiply.
+                        None => rsx! {
+                            <img
+                                src={path}
+                                objectFit={ObjectFit::Contain}
+                                max_w_full
+                                max_h_full
+                            />
+                        },
+                    }}
                 </div>
             </div>
         }
     }
 }
 
-/// Read an image's pixel size from its PNG header.
+/// The image's pixel size, as the element will draw it.
 ///
-/// `png::Decoder` needs a `Read + Seek`, which a `Cursor` over the file gives.
-/// Other formats report no size rather than guessing.
-fn image_dimensions(path: &Path) -> Option<(u32, u32)> {
-    if crate::workspace::fs_util::extension_of(path).as_deref() != Some("png") {
-        return None;
-    }
-    let file = std::fs::File::open(path).ok()?;
-    let decoder = png::Decoder::new(std::io::BufReader::new(file));
-    let reader = decoder.read_info().ok()?;
-    let info = reader.info();
-    Some((info.width, info.height))
+/// Asked of GPUI's own image loader rather than decoded here: the loader is
+/// already reading the file for the element, so this shares that one decode and
+/// covers every format the element supports instead of PNG alone. `None` means
+/// the file is not loaded yet (or cannot be), which also covers SVG — it has no
+/// pixel size until the renderer picks one, and stays unzoomed.
+fn image_size(window: &mut Window, path: &Path, cx: &mut App) -> Option<(f32, f32)> {
+    let resource = Resource::from(path.to_path_buf());
+    let image = window.use_asset::<ImgResourceLoader>(&resource, cx)?.ok()?;
+    let size = image.size(0);
+    (size.width.0 > 0 && size.height.0 > 0).then_some((size.width.0 as f32, size.height.0 as f32))
 }
