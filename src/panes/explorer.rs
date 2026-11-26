@@ -6,15 +6,15 @@
 
 use std::sync::Arc;
 
-use gpui::base::{TreeEvent, TreeState};
+use gpui::base::TreeEvent;
 use gpui::component::{
     ActiveTheme as _, Sizable as _,
     button::{Button, ButtonVariants as _},
 };
 use gpui::{
     App, AppContext as _, Context, Entity, EventEmitter, FocusHandle, Focusable,
-    InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString, Styled as _,
-    Subscription, Window, div, prelude::FluentBuilder as _, px,
+    InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString,
+    StatefulInteractiveElement as _, Styled as _, Subscription, Window, div, px,
 };
 use gpui_rsx::rsx;
 
@@ -171,6 +171,8 @@ impl Render for ExplorerView {
         let tree_state = self.workspace.read(cx).tree_state().clone();
         let has_root = self.workspace.read(cx).root().is_some();
         let muted = cx.theme().muted_foreground;
+        let shell = self.shell.clone();
+        let workspace = self.workspace.clone();
 
         rsx! {
             <div class="flex flex-col size-full">
@@ -208,7 +210,13 @@ impl Render for ExplorerView {
                 </div>
                 <div class="flex-1 min-h-0 overflow-hidden">
                     {if has_root {
-                        rsx! { <div class="size-full">{tree_state}</div> }
+                        rsx! {
+                            <div class="size-full">
+                                {gpui::component::tree::tree(&tree_state, move |_ix, entry, _selected, _window, cx| {
+                                    row(entry, &workspace, &shell, cx)
+                                })}
+                            </div>
+                        }
                     } else {
                         rsx! {
                             <div class="p-2 text-xs" text_color={muted}>
@@ -222,6 +230,71 @@ impl Render for ExplorerView {
     }
 }
 
-/// The tree state type, re-exported so a test can name it without the dock
-/// crate.
-pub type ExplorerTree = Entity<TreeState>;
+/// One tree row: an indent, a chevron for directories, an icon, and the name.
+///
+/// The click is on the label, not the row, and it stops propagation: the base
+/// tree toggles a directory on any click, so a file's click has to be claimed
+/// before it reaches that handler (risk R6).
+fn row(
+    entry: &gpui::base::TreeEntry,
+    workspace: &Entity<Workspace>,
+    shell: &gpui::WeakEntity<AppShell>,
+    cx: &mut App,
+) -> gpui::component::list::ListItem {
+    use gpui::component::list::ListItem;
+
+    let item = entry.item();
+    if crate::workspace::tree::DirTree::is_placeholder_id(&item.id) {
+        return ListItem::new(item.id.clone()).px(px(0.));
+    }
+
+    let path = crate::workspace::tree::DirTree::path_for_id(&item.id);
+    let is_dir = entry.is_folder();
+    let expanded = entry.is_expanded();
+    let depth = entry.depth();
+    let muted = cx.theme().muted_foreground;
+    let foreground = cx.theme().foreground;
+
+    let chevron = if is_dir {
+        if expanded {
+            icons::icon(lucide_icons::Icon::ChevronDown, 12.)
+        } else {
+            icons::icon(lucide_icons::Icon::ChevronRight, 12.)
+        }
+    } else {
+        icons::icon(lucide_icons::Icon::File, 12.)
+    };
+
+    let label = item.label.clone();
+    let workspace_for_click = workspace.clone();
+    let shell_for_click = shell.clone();
+    let path_for_click = path.clone();
+
+    let content = rsx! {
+        <div class="flex flex-row items-center gap-1" h={px(22.)}>
+            <div pl={px(4. + 10. * depth as f32)} />
+            <div text_color={muted}>{chevron}</div>
+            {gpui::div()
+                .text_xs()
+                .overflow_hidden()
+                .text_color(foreground)
+                .id(SharedString::from(format!("explorer-row-{}", item.id)))
+                .on_click(move |_, window, cx| {
+                    // A file's click opens it; a directory's is left to the
+                    // tree, which toggles it.
+                    if is_dir {
+                        return;
+                    }
+                    cx.stop_propagation();
+                    let path = path_for_click.clone();
+                    let _ = shell_for_click.update(cx, |shell, cx| {
+                        shell.open_path(path, window, cx);
+                    });
+                    let _ = &workspace_for_click;
+                })
+                .child(label)}
+        </div>
+    };
+
+    ListItem::new(item.id.clone()).child(content)
+}

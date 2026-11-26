@@ -206,11 +206,6 @@ pub fn file_name_of(path: &Path) -> String {
         .unwrap_or_else(|| path.display().to_string())
 }
 
-/// The parent directory, for "reveal in explorer" and for walking to a root.
-pub fn parent_of(path: &Path) -> Option<&Path> {
-    path.parent()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

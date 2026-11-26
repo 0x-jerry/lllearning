@@ -4,6 +4,15 @@
 //! root, the lazily-read directory cache ([`tree::DirTree`]), the `TreeState`
 //! the explorer renders, and the filesystem watcher. Nothing above it reaches
 //! into the filesystem directly.
+//!
+//! # Why some members are `pub` but only exercised by tests
+//!
+//! The workspace's readers — [`Workspace::tree`], the path predicates, the
+//! synchronous [`tree::load_expanded`] — are part of the seam's contract and are
+//! asserted by unit tests rather than by every call site in the binary. The
+//! dead-code lint cannot see a test-only consumer, so it is relaxed here rather
+//! than trimming the API to whatever the current UI happens to touch.
+#![allow(dead_code)]
 
 pub mod fs_util;
 pub mod tree;
@@ -13,7 +22,7 @@ use std::path::{Path, PathBuf};
 
 use gpui::{
     App, AppContext as _, Context, Entity, EventEmitter, PathPromptOptions, SharedString, Task,
-    WeakEntity, Window, base::TreeState,
+    Window, base::TreeState,
 };
 
 use tree::DirTree;
@@ -341,9 +350,6 @@ pub fn is_inside(root: Option<&Path>, path: &Path) -> bool {
 pub fn root_label(root: &Path) -> String {
     fs_util::file_name_of(root)
 }
-
-/// Keep a weak handle type alias readable at call sites that hold several.
-pub type WorkspaceHandle = WeakEntity<Workspace>;
 
 #[cfg(test)]
 mod tests {

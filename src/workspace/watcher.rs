@@ -56,13 +56,10 @@ impl FileWatcher {
             .name("lllearning-watch".to_owned())
             .spawn(move || {
                 let mut pending = BTreeSet::new();
-                loop {
-                    // Block for the first event of a batch; once one arrives,
-                    // keep collecting until the stream is quiet for DEBOUNCE.
-                    match raw_rx.recv() {
-                        Ok(event) => collect(event, &mut pending),
-                        Err(_) => break,
-                    }
+                // Block for the first event of a batch; once one arrives, keep
+                // collecting until the stream is quiet for DEBOUNCE.
+                while let Ok(event) = raw_rx.recv() {
+                    collect(event, &mut pending);
                     loop {
                         match raw_rx.recv_timeout(DEBOUNCE) {
                             Ok(event) => collect(event, &mut pending),
@@ -106,6 +103,12 @@ pub fn is_within(root: &Path, path: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_path_below_the_root_is_within_it() {
+        assert!(is_within(Path::new("/w"), Path::new("/w/a.txt")));
+        assert!(!is_within(Path::new("/w"), Path::new("/elsewhere/a.txt")));
+    }
 
     #[test]
     fn an_access_event_is_not_a_change() {

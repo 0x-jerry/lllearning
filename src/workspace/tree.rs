@@ -23,7 +23,7 @@ use std::{
 
 use gpui::{SharedString, base::TreeItem};
 
-use super::fs_util::{self, DirEntryInfo, file_name_of, read_dir_sorted};
+use super::fs_util::{DirEntryInfo, file_name_of, read_dir_sorted};
 
 /// A directory whose children have been read.
 #[derive(Clone, Debug, Default)]
@@ -356,32 +356,17 @@ fn id_for(path: &Path) -> SharedString {
 /// Fill in every open directory's children, reading the disk as needed.
 ///
 /// Returns whether anything was read, so the caller knows to rebuild the tree.
-/// Runs on the background executor in practice; it takes `&mut self` rather
-/// than `&App` so it stays testable without a window.
+/// This is the synchronous form used by tests and by the session restore, which
+/// reads a handful of folders once; the interactive path reads one directory on
+/// the background executor instead.
 pub fn load_expanded(tree: &mut DirTree) -> bool {
     let mut changed = false;
-    // `expanded_without_children` returns an owned list, so the loop can insert
-    // into `tree` while walking it.
     for dir in tree.expanded_without_children() {
         let (dir, children, truncated) = DirTree::read_listing(&dir);
         tree.insert_children(dir, children, truncated);
         changed = true;
     }
     changed
-}
-
-/// A tree for tests and for the "no folder" state.
-pub fn empty_tree() -> DirTree {
-    DirTree::new()
-}
-
-/// Re-exported so callers do not have to reach into `fs_util` for the one
-/// predicate the tree's own filtering depends on.
-pub use fs_util::is_ignored_name;
-
-/// A `TreeItem` id is a path, so it can be compared with a path directly.
-pub fn id_matches_path(id: &SharedString, path: &Path) -> bool {
-    fs_util::same_path(Path::new(id.as_ref()), path)
 }
 
 #[cfg(test)]

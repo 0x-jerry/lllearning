@@ -21,10 +21,7 @@ pub mod outline;
 
 use std::{rc::Rc, sync::Arc};
 
-use gpui::{
-    App, Entity, Global, SharedString, WeakEntity, Window, base::dock::PanelEvent,
-    component::dock::BasePanelView,
-};
+use gpui::{App, Entity, Global, SharedString, WeakEntity, Window, component::dock::BasePanelView};
 use lucide_icons::Icon;
 use serde_json::Value;
 
@@ -56,7 +53,6 @@ impl PaneSlot {
 /// The dock's own builder context carries only the dock area and the persisted
 /// panel state, so the workspace and the shell are handed over here instead.
 pub struct PaneContext {
-    pub slot: PaneSlot,
     pub workspace: Entity<Workspace>,
     pub shell: WeakEntity<AppShell>,
     /// The payload the panel wrote through its `dump`, or `None` for a fresh
@@ -143,7 +139,6 @@ pub fn register_pane(cx: &mut App, provider: Rc<dyn PaneProvider>) {
         let handles = ShellHandles::get(cx);
         for_builder.build(
             PaneContext {
-                slot: for_builder.slot(),
                 workspace: handles.workspace.clone(),
                 shell: handles.shell.clone(),
                 saved,
@@ -209,10 +204,4 @@ pub fn register_builtins(cx: &mut App) {
 /// Names a pane's dock traits need, re-exported so a pane module does not have
 /// to import the dock crate directly.
 #[doc(hidden)]
-pub mod __private {
-    pub use gpui::{
-        App, Context, EventEmitter, IntoElement, SharedString, Window,
-        base::dock::Panel as BasePanel, component::dock::Panel as ComponentPanel,
-        component::dock::PanelEvent, component::dock::PanelInfo, component::dock::PanelState,
-    };
-}
+pub mod __private {}

@@ -4,18 +4,23 @@
 //! slots, [`DocumentRegistry`] for the center, and [`Workspace`] for the folder.
 //! It has no idea what a file, an editor or a webview is — which is what makes
 //! the panes and the viewers replaceable without touching this file.
+//!
+//! # Why some accessors are `pub` but unused by the binary
+//!
+//! [`AppShell::dock`], [`AppShell::active_panes`], [`AppShell::active_tab`] and
+//! [`AppShell::close_document`] are the shell's own seam: a test drives the dock
+//! and the close flow through them, and a later feature (a keyboard shortcut, a
+//! menu) would too. The dead-code lint cannot see a test-only consumer, so it is
+//! relaxed here rather than hiding the shell's state behind an incomplete API.
+#![allow(dead_code)]
 
 use std::{collections::HashMap, path::PathBuf};
 
 use gpui::base::dock::{DockArea, DockEvent, DockLayout, DockPlacement, PanelId};
-use gpui::component::{
-    ActiveTheme as _, Selectable as _, Sizable as _,
-    button::{Button, ButtonVariants as _},
-};
+use gpui::component::{ActiveTheme as _, button::ButtonVariants as _};
 use gpui::{
-    App, AppContext as _, Context, Entity, EventEmitter, FocusHandle, Focusable,
-    InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString, Styled as _,
-    Subscription, Window, div, prelude::FluentBuilder as _, px,
+    App, AppContext as _, Context, Entity, EventEmitter, FocusHandle, Focusable, IntoElement,
+    ParentElement as _, Render, SharedString, Styled as _, Subscription, Window, div, px,
 };
 use gpui_rsx::rsx;
 
@@ -43,6 +48,8 @@ pub struct AppShell {
     /// A URL the browser pane should load next, put here by a viewer that cannot
     /// play a file itself.
     browser_request: Option<String>,
+    /// The pending debounced session write, held so a newer change can reuse it.
+    save_task: Option<gpui::Task<()>>,
     /// Dropped with the shell, so the subscriptions do not outlive it.
     _subscriptions: Vec<Subscription>,
 }
@@ -62,7 +69,7 @@ impl AppShell {
     /// here and its construction work runs inside `cx.new`'s own context.
     pub fn new(session: SessionState, window: &mut Window, cx: &mut App) -> Entity<Self> {
         let workspace = Workspace::new(cx);
-        let (dock, _skin) = ShellSkin::dock_area("workspace", Some(1), window, cx);
+        let (dock, skin) = ShellSkin::dock_area("workspace", Some(1), window, cx);
 
         let shell = cx.new(|cx| {
             let mut shell = Self {
@@ -73,6 +80,7 @@ impl AppShell {
                 documents: Vec::new(),
                 active_document: None,
                 browser_request: None,
+                save_task: None,
                 _subscriptions: Vec::new(),
             };
             shell.subscribe_all(window, cx);
@@ -85,7 +93,76 @@ impl AppShell {
         // shell are published here so a rebuilt pane can reach them.
         ShellHandles::set(cx, workspace, shell.downgrade());
 
+        // The skin asks the shell before it closes a tab, because only the
+        // shell knows whether the panel behind it has unsaved work.
+        let gate_shell = shell.downgrade();
+        skin.set_close_request(std::rc::Rc::new(move |panel_id, window, cx| {
+            gate_shell
+                .update(cx, |shell, cx| shell.allow_close(panel_id, window, cx))
+                .unwrap_or(true)
+        }));
+
+        // Closing the window hides it to the tray rather than quitting; the
+        // tray's Quit is what ends the app.
+        crate::tray::keep_window_on_close(window, cx);
+
         shell
+    }
+
+    /// Register the quit-time session save and dirty guard.
+    ///
+    /// Called once, after the window exists. The save is unconditional — a
+    /// session file is a convenience, not user data — but unsaved documents are
+    /// reported on stderr before the app goes, because there is no window left
+    /// to prompt in by the time this runs.
+    pub fn install_quit_hook(&mut self, cx: &mut Context<Self>) {
+        let this = cx.weak_entity();
+        let subscription = cx.on_app_quit(move |this_shell, cx| {
+            if let Some(shell) = this.upgrade() {
+                let shell = shell.read(cx);
+                if any_dirty(shell, cx) {
+                    eprintln!(
+                        "quitting with {} unsaved document(s)",
+                        shell
+                            .documents()
+                            .iter()
+                            .filter(|document| document.read(cx).is_dirty(cx))
+                            .count()
+                    );
+                }
+                crate::state::save(&shell.dump_session(cx));
+            }
+            let _ = this_shell;
+            async {}
+        });
+        self._subscriptions.push(subscription);
+    }
+
+    /// Whether the dock may close `panel_id` right now.
+    ///
+    /// A clean document closes at once. A dirty one is not closed: the shell
+    /// opens its Save / Discard / Cancel prompt instead, and the prompt does the
+    /// closing when the user answers.
+    fn allow_close(
+        &mut self,
+        panel_id: PanelId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let document = self
+            .documents
+            .iter()
+            .find(|document| PanelId::from(document.entity_id()) == panel_id)
+            .cloned();
+
+        match document {
+            Some(document) if document.read(cx).is_dirty(cx) => {
+                self.prompt_save_then_close(document, window, cx);
+                false
+            }
+            // A side pane, or a clean document: the dock closes it.
+            _ => true,
+        }
     }
 
     /// The workspace folder.
@@ -119,9 +196,11 @@ impl AppShell {
         let dock_subscription = cx.subscribe_in(
             &self.dock,
             window,
-            |this: &mut Self, _, event: &DockEvent, _, cx| {
+            |this: &mut Self, _, event: &DockEvent, window, cx| {
                 if matches!(event, DockEvent::LayoutChanged) {
                     this.sync_active_document(cx);
+                    // A moved divider, a new tab or a closed tab all land here.
+                    this.schedule_session_save(window, cx);
                     cx.notify();
                 }
             },
@@ -152,10 +231,11 @@ impl AppShell {
                 // files that are not in the tree.
                 self.close_all_documents(window, cx);
                 self.mount_side_panes(window, cx);
+                self.schedule_session_save(window, cx);
             }
             WorkspaceEvent::TreeChanged(_) => {}
             WorkspaceEvent::DiskChanged(paths) => {
-                self.mark_stale_documents(paths, cx);
+                self.sync_disk_changes(paths, window, cx);
             }
             WorkspaceEvent::Error(message) => {
                 eprintln!("workspace: {message}");
@@ -164,13 +244,37 @@ impl AppShell {
         cx.notify();
     }
 
-    /// Flag every open document whose file changed on disk.
-    fn mark_stale_documents(&mut self, paths: &[PathBuf], cx: &mut Context<Self>) {
+    /// Bring each open document in line with what changed on disk.
+    ///
+    /// A clean buffer is reloaded silently, because the user had no work in it.
+    /// A dirty buffer is only marked: overwriting unsaved edits with the disk
+    /// version would lose them (risk R11), so the panel shows a banner and the
+    /// user decides.
+    fn sync_disk_changes(
+        &mut self,
+        paths: &[PathBuf],
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         for path in paths {
-            for document in &self.documents {
-                if crate::workspace::fs_util::same_path(document.read(cx).path(), path) {
-                    document.update(cx, |_, cx| cx.notify());
+            let matching: Vec<Entity<DocumentPanel>> = self
+                .documents
+                .iter()
+                .filter(|document| {
+                    crate::workspace::fs_util::same_path(document.read(cx).path(), path)
+                })
+                .cloned()
+                .collect();
+
+            for document in matching {
+                let dirty = document.read(cx).is_dirty(cx);
+                let controller = document.read(cx).controller().clone();
+                if dirty {
+                    controller.mark_stale(cx);
+                } else {
+                    controller.reload_from_disk(window, cx);
                 }
+                document.update(cx, |_, cx| cx.notify());
             }
         }
     }
@@ -199,7 +303,6 @@ impl AppShell {
             for provider in &providers {
                 let panel = provider.build(
                     panes::PaneContext {
-                        slot,
                         workspace: self.workspace.clone(),
                         shell: cx.weak_entity(),
                         saved: None,
@@ -299,6 +402,8 @@ impl AppShell {
 
         self.documents.push(panel.clone());
         self.active_document = Some(panel.clone());
+        let controller = panel.read(cx).controller().clone();
+        controller.focus(window, cx);
         self.workspace
             .update(cx, |workspace, cx| workspace.reveal(&canonical, cx));
         cx.notify();
@@ -315,11 +420,20 @@ impl AppShell {
         self.dock.update(cx, |dock, cx| {
             dock.select_panel(panel_id, window, cx);
         });
+        // Selecting a tab is also focusing it: the editor should take the
+        // keyboard, or the user's next keystroke goes to the last thing that had
+        // it.
+        let controller = document.read(cx).controller().clone();
+        controller.focus(window, cx);
         self.active_document = Some(document.clone());
         cx.notify();
     }
 
     /// Close one document, prompting if it has unsaved changes.
+    ///
+    /// This is the path a keyboard shortcut or a menu uses. The tab bar's own
+    /// close button goes through [`Self::allow_close`], which calls the same
+    /// prompt.
     pub fn close_document(
         &mut self,
         document: Entity<DocumentPanel>,
@@ -331,6 +445,14 @@ impl AppShell {
             return;
         }
         self.remove_document(&document, window, cx);
+    }
+
+    /// The tab the dock is showing, if it is a document.
+    pub fn active_tab(&self, cx: &App) -> Option<PanelId> {
+        self.dock
+            .read(cx)
+            .layout(DockPlacement::Center)
+            .and_then(active_panel_in_tree)
     }
 
     /// Ask whether to save, discard or cancel before closing.
@@ -493,7 +615,6 @@ impl AppShell {
             None => {
                 let panel = provider.build(
                     panes::PaneContext {
-                        slot,
                         workspace: self.workspace.clone(),
                         shell: cx.weak_entity(),
                         saved: None,
@@ -550,6 +671,31 @@ impl AppShell {
             .update(cx, |workspace, cx| workspace.refresh(window, cx));
     }
 
+    /// Write the session after a short delay.
+    ///
+    /// A layout change arrives once per frame while a divider is dragged, so
+    /// writing on every event would rewrite the file dozens of times per
+    /// gesture. The debounce coalesces them; the newest write wins because each
+    /// task reads the layout when it fires rather than when it was spawned.
+    fn schedule_session_save(&mut self, window: &Window, cx: &mut Context<Self>) {
+        // A save already pending covers this change too.
+        if self.save_task.is_some() {
+            return;
+        }
+        let this = cx.weak_entity();
+        let task = cx.spawn_in(window, async move |_, cx| {
+            cx.background_executor()
+                .timer(std::time::Duration::from_millis(500))
+                .await;
+            let _ = this.update_in(cx, |this, _, cx| {
+                this.save_task = None;
+                let session = this.dump_session(cx);
+                crate::state::save(&session);
+            });
+        });
+        self.save_task = Some(task);
+    }
+
     /// The session to write on quit.
     pub fn dump_session(&self, cx: &App) -> SessionState {
         SessionState {
@@ -573,6 +719,8 @@ impl Render for AppShell {
         let left_active = self.active_panes.get(&PaneSlot::Left).cloned();
         let right_active = self.active_panes.get(&PaneSlot::Right).cloned();
         let dock = self.dock.clone();
+        let left_open = self.is_dock_open(PaneSlot::Left, cx);
+        let right_open = self.is_dock_open(PaneSlot::Right, cx);
 
         // Everything read from the app is resolved into owned values first.
         // The listeners below each need `cx` mutably, and one immutable borrow
@@ -613,6 +761,7 @@ impl Render for AppShell {
             .on_toggle(cx.listener(|this, slot: &PaneSlot, window, cx| {
                 this.toggle_dock(*slot, window, cx);
             }))
+            .set_open(left_open)
             .render(chrome.border, chrome.sidebar);
         let right_strip = ActivityBar::new(PaneSlot::Right, right_active, right_providers)
             .on_select(cx.listener(|this, id: &SharedString, window, cx| {
@@ -621,6 +770,7 @@ impl Render for AppShell {
             .on_toggle(cx.listener(|this, slot: &PaneSlot, window, cx| {
                 this.toggle_dock(*slot, window, cx);
             }))
+            .set_open(right_open)
             .render(chrome.border, chrome.sidebar);
 
         rsx! {
@@ -678,27 +828,4 @@ pub fn any_dirty(shell: &AppShell, cx: &App) -> bool {
         .documents()
         .iter()
         .any(|document| document.read(cx).is_dirty(cx))
-}
-
-/// The icon a pane's strip button uses, resolved from its provider.
-pub fn pane_icon(cx: &App, provider_id: &str) -> Option<lucide_icons::Icon> {
-    panes::pane_by_id(cx, provider_id).map(|provider| provider.icon())
-}
-
-/// The title a pane's strip button shows.
-pub fn pane_title(cx: &App, provider_id: &str) -> Option<SharedString> {
-    panes::pane_by_id(cx, provider_id).map(|provider| provider.title())
-}
-
-/// Keeps the `Button`/`Selectable` imports honest while the shell's own chrome
-/// lives in its child modules.
-#[allow(dead_code)]
-fn unused_imports() {
-    let _ = Button::new("unused").selected(false).small();
-    let _ = window_px();
-}
-
-#[allow(dead_code)]
-fn window_px() -> gpui::Pixels {
-    px(1.)
 }

@@ -5,7 +5,7 @@
 //! the viewer reports one, and whether the tree is being watched.
 
 use gpui::component::{ActiveTheme as _, status_bar::StatusBar};
-use gpui::{AnyElement, App, IntoElement, ParentElement as _, SharedString, Styled as _, div, px};
+use gpui::{AnyElement, App, IntoElement, SharedString, Styled as _, div, px};
 use gpui_rsx::rsx;
 
 use crate::{app::shell::AppShell, workspace::fs_util};
@@ -34,6 +34,13 @@ pub fn render(shell: &AppShell, cx: &App) -> AnyElement {
         bar = bar
             .left(separator(cx))
             .left(SharedString::from(fs_util::file_name_of(document.path())));
+        // The viewer's own name for what it is, so a refused file reads
+        // "Unsupported" rather than claiming a language it does not have.
+        if let Some(provider) = crate::documents::provider_by_id(cx, document.provider_id()) {
+            bar = bar
+                .left(separator(cx))
+                .left(SharedString::from(provider.title()));
+        }
         if let Some(language) = document.controller().language(cx) {
             bar = bar.left(separator(cx)).left(language);
         }

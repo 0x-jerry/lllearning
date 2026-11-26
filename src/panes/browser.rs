@@ -14,9 +14,8 @@ use gpui::component::{
     input::{Input, InputEvent, InputState},
 };
 use gpui::{
-    App, AppContext as _, Context, Entity, EventEmitter, FocusHandle, Focusable,
-    InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString, Styled as _,
-    Subscription, Window, div, prelude::FluentBuilder as _, px,
+    App, AppContext as _, Context, Entity, EventEmitter, FocusHandle, Focusable, IntoElement,
+    ParentElement as _, Render, SharedString, Styled as _, Subscription, Window, div, px,
 };
 use gpui_rsx::rsx;
 use gpui_webview::WebView;
@@ -116,7 +115,7 @@ impl PaneProvider for BrowserPane {
             .and_then(|value| value.get("url"))
             .and_then(|url| url.as_str())
             .map(str::to_owned);
-        let view = cx.new(|cx| BrowserView::new(saved_url, window, cx));
+        let view = cx.new(|cx| BrowserView::new(saved_url, ctx.shell, window, cx));
         gpui::component::dock::panel_handle(view)
     }
 }
@@ -138,11 +137,18 @@ pub struct BrowserView {
     start_page: bool,
     /// The last URL the webview reported, for the persisted payload.
     current_url: String,
+    /// The shell, for the navigations other panes route through it.
+    shell: gpui::WeakEntity<crate::app::shell::AppShell>,
     _address_events: Subscription,
 }
 
 impl BrowserView {
-    fn new(saved_url: Option<String>, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    fn new(
+        saved_url: Option<String>,
+        shell: gpui::WeakEntity<crate::app::shell::AppShell>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         // Webview events arrive on the platform's own callback, so they are
         // funnelled through a channel into a foreground task that updates the view.
         let (event_tx, event_rx) = gpui::base::async_util::unbounded::<WebViewEvent>();
@@ -219,6 +225,7 @@ impl BrowserView {
             error_address: String::new(),
             start_page: true,
             current_url: String::new(),
+            shell,
             _address_events: address_events,
         };
 
@@ -375,6 +382,12 @@ impl BrowserView {
             self.current_url.clone()
         }
     }
+
+    /// Take a navigation another pane asked the shell for.
+    fn take_shell_request(&self, cx: &mut Context<Self>) -> Option<String> {
+        let shell = self.shell.upgrade()?;
+        shell.update(cx, |shell, _| shell.take_browser_request())
+    }
 }
 
 impl Focusable for BrowserView {
@@ -387,6 +400,13 @@ impl EventEmitter<gpui::base::dock::PanelEvent> for BrowserView {}
 
 impl Render for BrowserView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // A viewer that cannot play a file asks the shell to load it here; the
+        // request is picked up on the next frame rather than pushed, so the
+        // browser pane keeps owning its own navigation.
+        if let Some(url) = self.take_shell_request(cx) {
+            self.navigate(&url, _window, cx);
+        }
+
         let border = cx.theme().border;
         let danger = cx.theme().danger;
         let muted = cx.theme().muted_foreground;

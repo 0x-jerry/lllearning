@@ -100,6 +100,13 @@ impl DocumentController for MarkdownController {
         });
     }
 
+    fn mark_stale(&self, cx: &mut App) {
+        self.view.update(cx, |view, cx| {
+            view.stale = true;
+            cx.notify();
+        });
+    }
+
     fn language(&self, _cx: &App) -> Option<SharedString> {
         Some(SharedString::from("Markdown"))
     }

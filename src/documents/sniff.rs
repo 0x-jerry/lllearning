@@ -6,8 +6,6 @@
 //! markdown file" lives in one place instead of being spread across four
 //! modules that could disagree.
 
-use std::path::Path;
-
 use super::Sniff;
 
 /// Which provider an extension belongs to.
@@ -167,16 +165,6 @@ pub fn human_size(bytes: u64) -> String {
         b if b >= KB => format!("{:.1} kB", b as f64 / KB as f64),
         b => format!("{b} B"),
     }
-}
-
-/// Whether `path`'s extension makes it an image.
-pub fn is_image(path: &Path) -> bool {
-    kind_of(extension(path).as_deref()) == Some(FileKind::Image)
-}
-
-/// The lowercased extension of `path`.
-fn extension(path: &Path) -> Option<String> {
-    crate::workspace::fs_util::extension_of(path)
 }
 
 #[cfg(test)]

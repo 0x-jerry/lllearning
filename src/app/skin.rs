@@ -6,13 +6,17 @@
 //! chrome — flat frames, hairline dividers, an underline tab bar with a close
 //! button per tab — using the public building blocks `DockSkin` itself uses.
 
-use std::{cell::Cell, rc::Rc, sync::Arc};
+use std::{
+    cell::{Cell, RefCell},
+    rc::Rc,
+    sync::Arc,
+};
 
 use gpui::base::{
     HandleEdge, ResizeHandleContext,
     dock::{
-        DockArea, DockAreaRenderer, DockContext, DockEvent, DockPlacement, NodeId, PanelState,
-        PanelView, TabGroupContext, TabGroupRenderer,
+        DockArea, DockAreaRenderer, DockContext, DockEvent, DockPlacement, NodeId, PanelId,
+        PanelState, PanelView, TabGroupContext, TabGroupRenderer,
     },
 };
 use gpui::component::{
@@ -45,11 +49,24 @@ struct SkinShared {
     /// Whether that dock was open when the drag began, so the release can tell
     /// whether the drag opened or closed it.
     resize_started_open: Cell<bool>,
+    /// Asked before a tab closes. The shell answers `true` to close at once and
+    /// `false` to keep the tab open because it opened its own prompt — which is
+    /// how the dirty-close flow gets a say without the skin knowing what a
+    /// document is.
+    close_request: RefCell<Option<CloseRequest>>,
 }
+
+/// A callback that decides whether a tab may close.
+type CloseRequest = Rc<dyn Fn(PanelId, &mut Window, &mut App) -> bool>;
 
 impl SkinShared {
     fn area(&self) -> &gpui::WeakEntity<DockArea> {
         &self.area
+    }
+
+    /// Install the shell's close gate.
+    fn set_close_request(&self, request: CloseRequest) {
+        *self.close_request.borrow_mut() = Some(request);
     }
 }
 
@@ -83,13 +100,17 @@ impl ShellSkin {
                 area: cx.weak_entity(),
                 resizing: Cell::new(None),
                 resize_started_open: Cell::new(false),
+                close_request: RefCell::new(None),
             }),
         })
     }
 
-    /// The shared state, for the tab-group renderer this skin hands out.
-    fn shared(&self) -> &Rc<SkinShared> {
-        &self.shared
+    /// Install the gate the shell uses to intercept a tab close.
+    ///
+    /// The skin cannot prompt by itself: a prompt needs to know whether the
+    /// panel holds unsaved work, which is the shell's business.
+    pub fn set_close_request(&self, request: CloseRequest) {
+        self.shared.set_close_request(request);
     }
 }
 
@@ -138,7 +159,7 @@ impl DockAreaRenderer for ShellSkin {
         &self,
         dock: &DockContext,
         content: AnyElement,
-        window: &mut Window,
+        _window: &mut Window,
         cx: &mut App,
     ) -> AnyElement {
         let placement = dock.placement();
@@ -337,7 +358,7 @@ impl TabGroupRenderer for ShellTabs {
     fn render_tab_bar(
         &self,
         group: &TabGroupContext,
-        window: &mut Window,
+        _window: &mut Window,
         cx: &mut App,
     ) -> AnyElement {
         // One panel with its own chrome draws no tab bar: the explorer and the
@@ -386,10 +407,22 @@ impl TabGroupRenderer for ShellTabs {
                         .active(active_bg),
                 )
                 .tab_stop(false)
-                .on_click(move |_, window, cx| {
-                    // Closing must not also select the tab.
-                    cx.stop_propagation();
-                    group_for_close.close(panel_id, window, cx);
+                .on_click({
+                    let close_request = self.shared.close_request.borrow().clone();
+                    move |_, window, cx| {
+                        // Closing must not also select the tab.
+                        cx.stop_propagation();
+                        // The shell gets first refusal: it may need to prompt
+                        // for unsaved work, in which case the tab stays open
+                        // until the prompt is answered.
+                        let allowed = match &close_request {
+                            Some(request) => request(panel_id, window, cx),
+                            None => true,
+                        };
+                        if allowed {
+                            group_for_close.close(panel_id, window, cx);
+                        }
+                    }
                 });
 
             tabs.push(
@@ -422,6 +455,34 @@ impl TabGroupRenderer for ShellTabs {
             )
             .when_some(trailing, |this, trailing| this.suffix(trailing))
             .into_any_element()
+    }
+
+    fn render_empty(
+        &self,
+        _group: &TabGroupContext,
+        _window: &mut Window,
+        cx: &mut App,
+    ) -> Option<AnyElement> {
+        // The centre with no tabs is the app's start screen, not a blank area.
+        // Side docks that lose their last pane fall back to this too, which is
+        // the right answer there as well: the strip is how you get one back.
+        let muted = cx.theme().muted_foreground;
+        let foreground = cx.theme().foreground;
+
+        Some(
+            rsx! {
+                <div class="flex flex-col size-full items-center justify-center gap-2 p-6">
+                    {Icon::new(IconName::FolderOpen).large().text_color(muted)}
+                    <div class="text-sm" text_color={foreground}>
+                        {"No file open"}
+                    </div>
+                    <div class="text-xs" text_color={muted}>
+                        {"Pick a file in the explorer to start."}
+                    </div>
+                </div>
+            }
+            .into_any_element(),
+        )
     }
 
     fn render_active_panel(

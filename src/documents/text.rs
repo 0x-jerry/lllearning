@@ -11,14 +11,15 @@ use std::{
 };
 
 use gpui::component::{
-    ActiveTheme as _,
+    ActiveTheme as _, Sizable as _,
+    button::Button,
     input::{Editor, EditorState, InputEvent},
 };
 use gpui::{
     App, AppContext as _, Context, Entity, EventEmitter, FocusHandle, Focusable, IntoElement,
-    ParentElement as _, Render, SharedString, Styled as _, Subscription, Window, div,
-    prelude::FluentBuilder as _,
+    ParentElement as _, Render, SharedString, Styled as _, Subscription, Window, div, px,
 };
+use gpui_rsx::rsx;
 
 use super::{DocumentContent, DocumentController, DocumentProvider, OpenContext, Sniff, sniff};
 
@@ -39,8 +40,10 @@ impl DocumentProvider for TextProvider {
     }
 
     fn score(&self, path: &Path, sniff: &Sniff) -> Option<u8> {
-        // Binary and oversized files are refused outright: the panel would
-        // have nothing to show, and the refusal is the honest answer.
+        // Binary and oversized files are refused by this provider: the panel
+        // would have nothing to show, and the refusal is the honest answer.
+        // They still open — `RefusedProvider` claims them below and explains
+        // why.
         if sniff::text_refusal(sniff).is_some() {
             return None;
         }
@@ -104,6 +107,13 @@ impl DocumentController for TextController {
         self.view.update(cx, |view, cx| {
             view.stale = false;
             view.reload(window, cx);
+        });
+    }
+
+    fn mark_stale(&self, cx: &mut App) {
+        self.view.update(cx, |view, cx| {
+            view.stale = true;
+            cx.notify();
         });
     }
 
@@ -200,26 +210,34 @@ impl EventEmitter<()> for TextView {}
 
 impl Render for TextView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        div()
-            .size_full()
-            .flex()
-            .flex_col()
-            .when(self.stale, |this| {
-                this.child(
-                    div()
-                        .px_2()
-                        .py_1()
-                        .text_xs()
-                        .bg(cx.theme().warning)
-                        .text_color(cx.theme().warning_foreground)
-                        .child("This file changed on disk."),
-                )
-            })
-            .child(
-                div()
-                    .flex_1()
-                    .min_h_0()
-                    .child(Editor::new(&self.editor).size_full()),
-            )
+        let warning = cx.theme().warning;
+        let warning_foreground = cx.theme().warning_foreground;
+        let stale = self.stale;
+
+        rsx! {
+            <div class="flex flex-col size-full">
+                {if stale {
+                    rsx! {
+                        <div
+                            class="flex flex-row items-center justify-between gap-2 px-2 py-1 text-xs"
+                            bg={warning}
+                            text_color={warning_foreground}
+                        >
+                            <div>{"This file changed on disk."}</div>
+                            <Button("text-reload")
+                                xsmall
+                                label={"Reload"}
+                                onClick={cx.listener(|this, _, window, cx| this.reload(window, cx))}
+                            />
+                        </div>
+                    }
+                } else {
+                    rsx! { <div /> }
+                }}
+                <div class="flex-1 min-h-0">
+                    {Editor::new(&self.editor).size_full()}
+                </div>
+            </div>
+        }
     }
 }

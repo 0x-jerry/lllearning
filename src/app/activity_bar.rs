@@ -6,7 +6,7 @@
 //! file.
 
 use gpui::component::{
-    ActiveTheme as _, Selectable as _, Sizable as _,
+    Selectable as _, Sizable as _,
     button::{Button, ButtonVariants as _},
 };
 use gpui::{
@@ -20,6 +20,12 @@ use crate::{
     panes::{self, PaneSlot},
 };
 
+/// What a strip button reports when it is pressed: the provider id.
+type SelectHandler = std::rc::Rc<dyn Fn(&SharedString, &mut Window, &mut App) + 'static>;
+
+/// What the collapse button reports when it is pressed: which side.
+type ToggleHandler = std::rc::Rc<dyn Fn(&PaneSlot, &mut Window, &mut App) + 'static>;
+
 /// The strip beside one dock.
 pub struct ActivityBar {
     slot: PaneSlot,
@@ -27,9 +33,11 @@ pub struct ActivityBar {
     providers: Vec<std::rc::Rc<dyn panes::PaneProvider>>,
     /// The provider id the dock is showing, so its button reads as selected.
     active: Option<String>,
+    /// Whether the dock is open, so the collapse button can point the right way.
+    open: bool,
     /// `Rc` because every button shares one handler.
-    on_select: Option<std::rc::Rc<dyn Fn(&SharedString, &mut Window, &mut App) + 'static>>,
-    on_toggle: Option<std::rc::Rc<dyn Fn(&PaneSlot, &mut Window, &mut App) + 'static>>,
+    on_select: Option<SelectHandler>,
+    on_toggle: Option<ToggleHandler>,
 }
 
 impl ActivityBar {
@@ -46,6 +54,7 @@ impl ActivityBar {
             slot,
             providers,
             active,
+            open: true,
             on_select: None,
             on_toggle: None,
         }
@@ -66,6 +75,13 @@ impl ActivityBar {
         handler: impl Fn(&PaneSlot, &mut Window, &mut App) + 'static,
     ) -> Self {
         self.on_toggle = Some(std::rc::Rc::new(handler));
+        self
+    }
+
+    /// Whether the dock this strip belongs to is open, so the collapse button
+    /// can show what pressing it will do.
+    pub fn set_open(mut self, open: bool) -> Self {
+        self.open = open;
         self
     }
 
@@ -113,9 +129,13 @@ impl ActivityBar {
             })
             .collect();
 
-        let collapse = match slot {
-            PaneSlot::Left => lucide_icons::Icon::PanelLeft,
-            PaneSlot::Right => lucide_icons::Icon::PanelRight,
+        // The button points the way it will move the dock: an open dock shows
+        // the "close" glyph, a closed one the "open" glyph.
+        let collapse = match (slot, self.open) {
+            (PaneSlot::Left, true) => lucide_icons::Icon::PanelLeftClose,
+            (PaneSlot::Left, false) => lucide_icons::Icon::PanelLeftOpen,
+            (PaneSlot::Right, true) => lucide_icons::Icon::PanelRightClose,
+            (PaneSlot::Right, false) => lucide_icons::Icon::PanelRightOpen,
         };
         let toggle_slot = slot;
 

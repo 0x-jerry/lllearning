@@ -16,8 +16,7 @@ use gpui::component::{
 };
 use gpui::{
     App, AppContext as _, Context, Entity, EventEmitter, FocusHandle, Focusable, IntoElement,
-    ObjectFit, ParentElement as _, Render, Styled as _, StyledImage as _, Window, div, img,
-    prelude::FluentBuilder as _, px,
+    ObjectFit, ParentElement as _, Render, Styled as _, StyledImage as _, Window, div, img, px,
 };
 
 use super::{DocumentContent, DocumentController, DocumentProvider, OpenContext, Sniff, sniff};

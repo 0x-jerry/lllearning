@@ -32,4 +32,7 @@ pub fn init(cx: &mut App) {
 
     panes::register_builtins(cx);
     documents::register_builtins(cx);
+    // The dock's builder for document tabs, so a restored session can rebuild
+    // the files it had open.
+    documents::register_documents(cx);
 }

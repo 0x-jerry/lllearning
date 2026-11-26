@@ -5,7 +5,7 @@
 //! viewers live in their own modules.
 
 use gpui::component::TitleBar;
-use gpui::{AppContext as _, WindowBounds, WindowOptions, px, size};
+use gpui::{WindowBounds, WindowOptions, px, size};
 
 mod app;
 mod documents;
@@ -66,13 +66,8 @@ fn main() {
                 }
             };
 
-            // The session is written once, on the way out. The shell is read
-            // through its entity so the dump sees the final layout.
-            cx.on_app_quit(move |cx| {
-                let session = shell.read(cx).dump_session(cx);
-                state::save(&session);
-                async {}
-            })
-            .detach();
+            // The session save and the dirty-document warning ride on the quit
+            // hook, which needs the finished shell.
+            shell.update(cx, |shell, cx| shell.install_quit_hook(cx));
         });
 }

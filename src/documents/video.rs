@@ -15,7 +15,7 @@ use std::{
 
 use gpui::component::{
     ActiveTheme as _, Icon, Sizable as _,
-    button::{Button, ButtonVariants as _},
+    button::Button,
     empty::{
         Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyMedia, EmptyMediaVariant,
         EmptyTitle,

@@ -9,8 +9,7 @@ use gpui::component::{
     button::{Button, ButtonVariants as _},
 };
 use gpui::{
-    AnyElement, App, InteractiveElement as _, IntoElement, ParentElement as _, SharedString,
-    Styled as _, Window, div, px,
+    AnyElement, App, IntoElement, ParentElement as _, SharedString, Styled as _, Window, div, px,
 };
 use gpui_rsx::rsx;
 
@@ -59,17 +58,6 @@ pub fn render(
                     {icons::icon(lucide_icons::Icon::RefreshCw, 14.)}
                 </Button>
             </div>
-        </TitleBar>
-    }
-    .into_any_element()
-}
-
-/// The title bar with no actions, for a window that has nothing to act on.
-pub fn render_plain(cx: &App) -> AnyElement {
-    let mark = app_mark(cx.theme().primary);
-    rsx! {
-        <TitleBar base={TitleBar::new()}>
-            {mark}
         </TitleBar>
     }
     .into_any_element()

@@ -11,7 +11,7 @@
 
 use std::borrow::Cow;
 
-use gpui::{App, Div, IntoElement, ParentElement as _, SharedString, Styled as _, div, px};
+use gpui::{App, Div, ParentElement as _, SharedString, Styled as _, div, px};
 use lucide_icons::{Icon, LUCIDE_FONT_BYTES};
 
 /// The family name from the bundled font's `name` table.
@@ -52,20 +52,6 @@ pub fn icon(glyph: Icon, size: f32) -> Div {
         .flex_none()
         .w(px(size))
         .h(px(size))
-        .font_family(LUCIDE_FAMILY)
-        .text_size(px(size))
-        .line_height(px(size))
-        .child(SharedString::from(char::from(glyph).to_string()))
-}
-
-/// [`icon`] at the 16 px size the chrome mostly uses.
-pub fn icon_sm(glyph: Icon) -> Div {
-    icon(glyph, 16.)
-}
-
-/// A glyph sized to the surrounding text, for callers already holding a `Div`.
-pub fn glyph(glyph: Icon, size: f32) -> impl IntoElement {
-    div()
         .font_family(LUCIDE_FAMILY)
         .text_size(px(size))
         .line_height(px(size))
@@ -138,7 +124,9 @@ mod tests {
             if platform == 3 {
                 Some(String::from_utf16_lossy(
                     &bytes
-                        .chunks_exact(2)
+                        .as_chunks::<2>()
+                        .0
+                        .iter()
                         .map(|pair| u16::from_be_bytes([pair[0], pair[1]]))
                         .collect::<Vec<_>>(),
                 ))

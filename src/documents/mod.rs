@@ -6,6 +6,17 @@
 //! sniffed from the disk and taking the best.
 //!
 //! Adding a viewer is one module plus one [`register_document_provider`] call.
+//!
+//! # Why some members are `pub` but only exercised by tests
+//!
+//! A seam is a contract, and its contract is verified by tests rather than by
+//! every consumer using every method. [`providers`], [`provider_by_id`] and the
+//! `DocumentController` reload pair exist so a viewer can be driven uniformly
+//! and so the score table can be asserted; the binary itself reaches only the
+//! parts it needs. The dead-code lint cannot tell that difference, so it is
+//! relaxed for this module rather than the API being trimmed to whatever the
+//! current call sites happen to use.
+#![allow(dead_code)]
 
 pub mod image;
 pub mod markdown;
@@ -104,6 +115,14 @@ pub trait DocumentController {
     /// Accept the on-disk version, clearing the stale marker.
     fn accept_disk_change(&self, window: &mut Window, cx: &mut App);
 
+    /// Note that the file changed on disk while the buffer had unsaved edits.
+    ///
+    /// The buffer is not touched: the panel shows a banner and the user decides
+    /// whether to reload.
+    fn mark_stale(&self, cx: &mut App) {
+        let _ = cx;
+    }
+
     /// The language shown in the status bar, if the viewer has one.
     fn language(&self, cx: &App) -> Option<SharedString> {
         let _ = cx;
@@ -194,10 +213,17 @@ pub fn provider_for(cx: &App, path: &Path, sniff: &Sniff) -> Option<Rc<dyn Docum
         .and_then(|registry| registry.best_for(path, sniff))
 }
 
-/// A provider by id.
+/// A provider by id, for the status bar and for rebuilding a panel.
 pub fn provider_by_id(cx: &App, id: &str) -> Option<Rc<dyn DocumentProvider>> {
     cx.try_global::<DocumentRegistry>()
         .and_then(|registry| registry.by_id(id))
+}
+
+/// Every registered provider, in registration order.
+pub fn providers(cx: &App) -> Vec<Rc<dyn DocumentProvider>> {
+    cx.try_global::<DocumentRegistry>()
+        .map(|registry| registry.providers().to_vec())
+        .unwrap_or_default()
 }
 
 /// Register the viewers this build ships.
@@ -208,6 +234,158 @@ pub fn register_builtins(cx: &mut App) {
     register_document_provider(cx, Rc::new(video::VideoProvider));
     register_document_provider(cx, Rc::new(markdown::MarkdownProvider));
     register_document_provider(cx, Rc::new(text::TextProvider));
+    // Last, and scoring below text: it only claims what text refused, so a
+    // binary or oversized file opens a panel that explains itself instead of
+    // doing nothing at all (risk R4's sibling case).
+    register_document_provider(cx, Rc::new(refused::RefusedProvider));
+}
+
+/// The viewer that stands in for a file no real viewer will open.
+pub mod refused {
+    use std::{
+        path::{Path, PathBuf},
+        rc::Rc,
+    };
+
+    use gpui::component::{
+        Icon,
+        empty::{Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyMediaVariant, EmptyTitle},
+    };
+    use gpui::{
+        App, AppContext as _, Context, Entity, EventEmitter, FocusHandle, Focusable, IntoElement,
+        ParentElement as _, Render, SharedString, Styled as _, Window, div,
+        prelude::FluentBuilder as _, px,
+    };
+    use gpui_rsx::rsx;
+
+    use super::{DocumentContent, DocumentController, DocumentProvider, OpenContext, Sniff, sniff};
+
+    /// Scores just below the text viewer, so it only wins where text declined.
+    const SCORE: u8 = 1;
+
+    /// Claims binary and oversized files so they open an explanation.
+    pub struct RefusedProvider;
+
+    impl DocumentProvider for RefusedProvider {
+        fn id(&self) -> &'static str {
+            "refused"
+        }
+
+        fn title(&self) -> &'static str {
+            "Unsupported"
+        }
+
+        fn score(&self, _path: &Path, sniff: &Sniff) -> Option<u8> {
+            sniff::text_refusal(sniff).map(|_| SCORE)
+        }
+
+        fn open(&self, ctx: OpenContext, window: &mut Window, cx: &mut App) -> DocumentContent {
+            let refusal = sniff::text_refusal(&ctx.sniff)
+                .map(|refusal| refusal.message())
+                .unwrap_or_else(|| "This file cannot be shown.".to_owned());
+            let view = cx.new(|cx| RefusedView::new(ctx.path, refusal, cx));
+            let _ = window;
+            let controller: Rc<dyn DocumentController> =
+                Rc::new(RefusedController { view: view.clone() });
+            DocumentContent {
+                view: view.into(),
+                controller,
+            }
+        }
+    }
+
+    struct RefusedController {
+        view: Entity<RefusedView>,
+    }
+
+    impl DocumentController for RefusedController {
+        fn is_dirty(&self, _cx: &App) -> bool {
+            false
+        }
+
+        fn save(&self, _window: &mut Window, _cx: &mut App) -> Result<(), String> {
+            Ok(())
+        }
+
+        fn focus(&self, window: &mut Window, cx: &mut App) {
+            self.view.update(cx, |view, cx| {
+                view.focus_handle.focus(window, cx);
+            });
+        }
+
+        fn reload_from_disk(&self, _window: &mut Window, cx: &mut App) {
+            self.view.update(cx, |_, cx| cx.notify());
+        }
+
+        fn focus_handle(&self, cx: &App) -> FocusHandle {
+            self.view.read(cx).focus_handle(cx)
+        }
+
+        fn is_stale(&self, _cx: &App) -> bool {
+            false
+        }
+
+        fn accept_disk_change(&self, _window: &mut Window, _cx: &mut App) {}
+
+        fn language(&self, _cx: &App) -> Option<SharedString> {
+            Some(SharedString::from("Binary"))
+        }
+    }
+
+    /// The explanation panel.
+    pub struct RefusedView {
+        path: PathBuf,
+        message: String,
+        focus_handle: FocusHandle,
+    }
+
+    impl RefusedView {
+        fn new(path: PathBuf, message: String, cx: &mut Context<Self>) -> Self {
+            Self {
+                path,
+                message,
+                focus_handle: cx.focus_handle(),
+            }
+        }
+    }
+
+    impl Focusable for RefusedView {
+        fn focus_handle(&self, _: &App) -> FocusHandle {
+            self.focus_handle.clone()
+        }
+    }
+
+    impl EventEmitter<()> for RefusedView {}
+
+    impl Render for RefusedView {
+        fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+            let name = crate::workspace::fs_util::file_name_of(&self.path);
+            let message = self.message.clone();
+
+            rsx! {
+                <div class="flex size-full items-center justify-center p-6">
+                    <Empty
+                        base={Empty::new()}
+                        header={EmptyHeader::new()
+                            .media(
+                                EmptyMedia::new()
+                                    .with_variant(EmptyMediaVariant::Icon)
+                                    .child(Icon::new(gpui::component::IconName::File)),
+                            )
+                            .title(EmptyTitle::new().child(SharedString::from(name)))
+                            .description(EmptyDescription::new().child(SharedString::from(message)))}
+                    />
+                </div>
+            }
+            .into_any_element()
+        }
+    }
+
+    /// Keeps the `px`/`div`/`when` imports honest for the rsx expansion.
+    #[allow(dead_code)]
+    fn unused() -> impl IntoElement {
+        div().px(px(1.)).when(true, |this| this)
+    }
 }
 
 /// The tab title for a document: the file name, with a dot when dirty.
@@ -451,5 +629,130 @@ impl gpui::component::dock::Panel for MissingDocument {
 
     fn title(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
         SharedString::from("Unavailable")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sniff(ext: Option<&str>, len: u64, is_binary: bool) -> Sniff {
+        Sniff {
+            ext: ext.map(str::to_owned),
+            len,
+            is_binary,
+        }
+    }
+
+    fn registry() -> DocumentRegistry {
+        let mut registry = DocumentRegistry::default();
+        registry.providers.push(Rc::new(image::ImageProvider));
+        registry.providers.push(Rc::new(video::VideoProvider));
+        registry.providers.push(Rc::new(markdown::MarkdownProvider));
+        registry.providers.push(Rc::new(text::TextProvider));
+        registry.providers.push(Rc::new(refused::RefusedProvider));
+        registry
+    }
+
+    /// The score table is the contract that decides what opens a file, so it is
+    /// asserted directly rather than through a window.
+    #[test]
+    fn each_file_type_lands_on_the_viewer_it_should() {
+        let registry = registry();
+
+        let cases: [(Option<&str>, Option<&str>); 8] = [
+            (Some("png"), Some("image")),
+            (Some("jpg"), Some("image")),
+            (Some("mp4"), Some("video")),
+            (Some("webm"), Some("video")),
+            (Some("md"), Some("markdown")),
+            (Some("rs"), Some("text")),
+            (Some("txt"), Some("text")),
+            // No extension at all is still text.
+            (None, Some("text")),
+        ];
+
+        for (ext, expected) in cases {
+            let sniff = sniff(ext, 128, false);
+            let provider = registry.best_for(Path::new("a"), &sniff);
+            assert_eq!(
+                provider.map(|provider| provider.id()),
+                expected,
+                "extension {ext:?} should open {expected:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_binary_file_opens_the_explanation_panel() {
+        let registry = registry();
+        let provider = registry
+            .best_for(Path::new("a.bin"), &sniff(Some("bin"), 128, true))
+            .expect("a binary file still opens something");
+        assert_eq!(provider.id(), "refused");
+    }
+
+    #[test]
+    fn an_oversized_file_opens_the_explanation_panel() {
+        let registry = registry();
+        let len = crate::workspace::fs_util::MAX_TEXT_BYTES + 1;
+        let provider = registry
+            .best_for(Path::new("big.txt"), &sniff(Some("txt"), len, false))
+            .expect("an oversized file still opens something");
+        assert_eq!(provider.id(), "refused");
+    }
+
+    #[test]
+    fn a_binary_image_extension_still_opens_the_image_viewer() {
+        // The image viewer does not read the file as text, so a NUL in the head
+        // must not push a PNG to the refusal panel.
+        let registry = registry();
+        let provider = registry
+            .best_for(Path::new("a.png"), &sniff(Some("png"), 128, true))
+            .expect("an image opens the image viewer");
+        assert_eq!(provider.id(), "image");
+    }
+
+    #[test]
+    fn a_provider_is_found_by_id() {
+        let registry = registry();
+        assert!(registry.by_id("text").is_some());
+        assert!(registry.by_id("image").is_some());
+        assert!(registry.by_id("nope").is_none());
+    }
+
+    #[test]
+    fn a_document_payload_round_trips() {
+        let path = Path::new("/work/notes.md");
+        let payload = document_payload(path, "markdown");
+        let (back_path, back_provider) =
+            parse_document_payload(&payload).expect("the payload parses");
+        assert_eq!(back_path, path);
+        assert_eq!(back_provider, "markdown");
+    }
+
+    #[test]
+    fn a_malformed_payload_is_rejected() {
+        assert!(parse_document_payload(&serde_json::json!({})).is_none());
+        assert!(parse_document_payload(&serde_json::json!({"path": "a"})).is_none());
+        assert!(
+            parse_document_payload(&serde_json::json!({"path": "a", "provider": "text"})).is_some()
+        );
+    }
+
+    #[test]
+    fn a_dirty_tab_title_carries_a_marker() {
+        let clean = tab_title(Path::new("/work/a.rs"), false);
+        let dirty = tab_title(Path::new("/work/a.rs"), true);
+        assert_eq!(clean.as_ref(), "a.rs");
+        assert!(dirty.as_ref().starts_with("a.rs"));
+        assert_ne!(clean, dirty);
+    }
+
+    /// The sniff extension helper answers the empty case.
+    #[test]
+    fn the_sniff_extension_helper_answers_the_empty_case() {
+        assert_eq!(sniff(None, 1, false).ext_str(), "");
+        assert_eq!(sniff(Some("rs"), 1, false).ext_str(), "rs");
     }
 }

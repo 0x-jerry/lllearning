@@ -14,9 +14,8 @@ use gpui::component::{
     button::{Button, ButtonVariants as _},
 };
 use gpui::{
-    App, AppContext as _, Context, EventEmitter, FocusHandle, Focusable, InteractiveElement as _,
-    IntoElement, ParentElement as _, Render, SharedString, Styled as _, Window, div,
-    prelude::FluentBuilder as _, px,
+    App, AppContext as _, Context, EventEmitter, FocusHandle, Focusable, IntoElement,
+    ParentElement as _, Render, SharedString, Styled as _, Window, div, px,
 };
 use gpui_rsx::rsx;
 
