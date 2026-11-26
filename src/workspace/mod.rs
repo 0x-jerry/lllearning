@@ -176,12 +176,22 @@ impl Workspace {
 
     /// Open or close a directory the user clicked, reading its children if it
     /// was opened for the first time.
-    pub fn toggle_dir(&mut self, dir: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
-        let opened = self.tree.toggle_expanded(&dir);
+    ///
+    /// The tree has already toggled the row and reported which way it went;
+    /// this records that in the cache and reads the directory if it is being
+    /// opened for the first time.
+    pub fn toggle_dir(
+        &mut self,
+        dir: PathBuf,
+        expanded: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.tree.set_expanded(&dir, expanded);
         // The open state must show immediately or the click looks ignored.
         self.rebuild_tree_state(cx);
 
-        if opened && !self.tree.is_loaded(&dir) {
+        if expanded && !self.tree.is_loaded(&dir) {
             let this = cx.weak_entity();
             let dir_for_read = dir.clone();
             cx.spawn_in(window, async move |_, cx| {

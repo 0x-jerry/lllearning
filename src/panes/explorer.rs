@@ -78,15 +78,16 @@ impl ExplorerView {
     ) -> Self {
         let focus_handle = cx.focus_handle();
         let tree_state = workspace.read(cx).tree_state().clone();
-        // An expand or collapse is the only thing the tree reports; the
-        // workspace does the reading.
+        // Both halves of a toggle arrive here: the tree flips the row and says
+        // which way, and the workspace keeps its cache in step. Ignoring
+        // `Collapsed` would leave the cache believing a folded directory is
+        // still open, and the next click would look like it did nothing.
         let tree_events = cx.subscribe_in(
             &tree_state,
             window,
-            |this: &mut Self, _, event: &TreeEvent, window, cx| {
-                if let TreeEvent::Expanded(id) = event {
-                    this.on_expanded(id, window, cx);
-                }
+            |this: &mut Self, _, event: &TreeEvent, window, cx| match event {
+                TreeEvent::Expanded(id) => this.on_toggled(id, true, window, cx),
+                TreeEvent::Collapsed(id) => this.on_toggled(id, false, window, cx),
             },
         );
 
@@ -98,14 +99,22 @@ impl ExplorerView {
         }
     }
 
-    /// Read a directory's children when the tree opens it.
-    fn on_expanded(&mut self, id: &SharedString, window: &mut Window, cx: &mut Context<Self>) {
+    /// Read a directory's children when the tree opens it, and record what the
+    /// click did either way.
+    fn on_toggled(
+        &mut self,
+        id: &SharedString,
+        expanded: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if crate::workspace::tree::DirTree::is_placeholder_id(id) {
             return;
         }
         let path = crate::workspace::tree::DirTree::path_for_id(id);
-        self.workspace
-            .update(cx, |workspace, cx| workspace.toggle_dir(path, window, cx));
+        self.workspace.update(cx, |workspace, cx| {
+            workspace.toggle_dir(path, expanded, window, cx)
+        });
         cx.notify();
     }
 

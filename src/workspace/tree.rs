@@ -66,6 +66,22 @@ impl DirTree {
         self.selected = path;
     }
 
+    /// Record what a click in the tree did: the row it landed on, and whether
+    /// that row was opened or closed.
+    ///
+    /// The click's effect lives in the `TreeState` first — it toggles the row
+    /// and emits the event before the cache hears about it — so the cache has
+    /// to be told the new state rather than flipping its own, or the two
+    /// disagree and the next click closes what looks open.
+    pub fn set_expanded(&mut self, dir: &Path, expanded: bool) {
+        if expanded {
+            self.expanded.insert(dir.to_path_buf());
+        } else {
+            self.expanded.remove(dir);
+        }
+        self.selected = Some(dir.to_path_buf());
+    }
+
     /// Whether a directory's listing was capped.
     pub fn is_truncated(&self, path: &Path) -> bool {
         self.truncated.contains(path)
@@ -172,20 +188,6 @@ impl DirTree {
         match read_dir_sorted(dir) {
             Ok((children, truncated)) => (dir.to_path_buf(), children, truncated),
             Err(_) => (dir.to_path_buf(), Vec::new(), false),
-        }
-    }
-
-    /// Open or close a directory.
-    ///
-    /// Returns whether the directory is open afterwards, so the caller can
-    /// decide whether it needs to load children.
-    pub fn toggle_expanded(&mut self, dir: &Path) -> bool {
-        if self.expanded.contains(dir) {
-            self.expanded.remove(dir);
-            false
-        } else {
-            self.expanded.insert(dir.to_path_buf());
-            true
         }
     }
 
@@ -518,6 +520,34 @@ mod tests {
         assert!(tree.is_expanded(&dir.join("a/b")));
         assert!(tree.is_expanded(&dir.join("a/b/c")));
         assert_eq!(tree.selected(), Some(target.as_path()));
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_clicked_directory_folds_and_unfolds_repeatedly() {
+        // The tree toggles the row itself and reports the result; the cache
+        // records it. Flipping the cache's own state instead made the two
+        // disagree after the first click, so the second looked like it only
+        // moved the selection.
+        let dir = temp_dir("fold");
+        std::fs::create_dir(dir.join("sub")).unwrap();
+        std::fs::write(dir.join("sub/one.txt"), b"x").unwrap();
+        let sub = dir.join("sub");
+
+        let mut tree = DirTree::new();
+        tree.set_root(dir.clone()).unwrap();
+
+        tree.set_expanded(&sub, true);
+        load_expanded(&mut tree);
+        assert!(tree.is_expanded(&sub));
+        assert_eq!(tree.selected(), Some(sub.as_path()), "the click selects");
+
+        tree.set_expanded(&sub, false);
+        assert!(!tree.is_expanded(&sub), "the second click folds it");
+
+        tree.set_expanded(&sub, true);
+        assert!(tree.is_expanded(&sub), "and it opens again");
 
         std::fs::remove_dir_all(&dir).ok();
     }
