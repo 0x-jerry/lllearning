@@ -198,6 +198,15 @@ It must be called outside a draw — opening a window paints its first frame bef
 it returns, so the shell defers it with `cx.defer_in` — and the returned `Task`
 must be kept, or the popup has nowhere to send its answer.
 
+**A popup is shown before it can be adopted, so shedding its taskbar button takes
+a hide/show.** `open_window` shows the window inside `Window::new` and only then
+calls the build closure, and the window was created with `WS_EX_APPWINDOW` and no
+owner. So by the time `window::adopt_owner` runs there is already a taskbar button
+for it, and Windows does not re-read a visible window's taskbar eligibility —
+clearing the style alone leaves the button there forever. `adopt_owner` therefore
+hides, restyles, sets the owner and shows again. Nothing has painted at that
+point, so it is not a flicker. Do not "simplify" that into a restyle in place.
+
 **A popup window is owned on the platform, but nothing makes it follow its owner
 off the screen.** The tray's Hide and the close-to-tray guard take the owner away
 without closing it, so both call `popup::close_for` first. A modal prompt also

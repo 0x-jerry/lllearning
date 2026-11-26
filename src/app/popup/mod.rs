@@ -118,8 +118,9 @@ where
         .expect("a popup is built once");
 
     let opened = gpui::open_window(options, cx, move |window, cx| {
-        // After the window exists: there is no handle to adopt before it, and it
-        // must not paint once as a taskbar window before being adopted.
+        // After the window exists: there is no handle to adopt before it. It is
+        // already shown by now, which `adopt_owner` has to undo and redo to shed
+        // the taskbar button it was created with.
         crate::window::adopt_owner(window, owner_native, modal);
         let popup = built.take().expect("the popup is built once");
         let view = cx.new(|_| popup);
