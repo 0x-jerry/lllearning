@@ -18,6 +18,7 @@ use gpui::{
     App, AppContext as _, Context, Entity, EventEmitter, FocusHandle, Focusable, IntoElement,
     ObjectFit, ParentElement as _, Render, Styled as _, StyledImage as _, Window, div, img, px,
 };
+use gpui_rsx::rsx;
 
 use super::{DocumentContent, DocumentController, DocumentProvider, OpenContext, Sniff, sniff};
 
@@ -165,68 +166,54 @@ impl Render for ImageView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let path = self.path.clone();
         let zoom = self.zoom;
+        let zoom_label = format!("{:.0}%", zoom * 100.);
+        let dimensions = self.dimensions_label();
+        let border = cx.theme().border;
+        let muted = cx.theme().muted;
+        let muted_foreground = cx.theme().muted_foreground;
 
-        div()
-            .size_full()
-            .flex()
-            .flex_col()
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap_1()
-                    .px_2()
-                    .py_1()
-                    .border_b_1()
-                    .border_color(cx.theme().border)
-                    .child(
-                        Button::new("image-zoom-out")
-                            .label("−")
-                            .xsmall()
-                            .ghost()
-                            .on_click(cx.listener(|this, _, _, cx| this.zoom_out(cx))),
-                    )
-                    .child(
-                        Button::new("image-zoom-reset")
-                            .label(format!("{:.0}%", zoom * 100.))
-                            .xsmall()
-                            .ghost()
-                            .on_click(cx.listener(|this, _, _, cx| this.reset_zoom(cx))),
-                    )
-                    .child(
-                        Button::new("image-zoom-in")
-                            .label("+")
-                            .xsmall()
-                            .ghost()
-                            .on_click(cx.listener(|this, _, _, cx| this.zoom_in(cx))),
-                    )
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(cx.theme().muted_foreground)
-                            .child(self.dimensions_label()),
-                    ),
-            )
-            .child(
-                // The checkerboard is two offset blocks of the muted colour, so
-                // a transparent image is distinguishable from the pane.
-                div()
-                    .flex_1()
-                    .min_h_0()
-                    .overflow_hidden()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .bg(cx.theme().muted)
-                    .child(
-                        img(path)
-                            .object_fit(ObjectFit::Contain)
-                            .w(px(1024. * zoom))
-                            .h(px(1024. * zoom))
-                            .max_w_full()
-                            .max_h_full(),
-                    ),
-            )
+        rsx! {
+            <div class="size-full flex flex-col">
+                <div
+                    class="flex flex-row items-center gap-1 px-2 py-1"
+                    border_b_1
+                    border_color={border}
+                >
+                    <Button("image-zoom-out")
+                        label="−"
+                        xsmall
+                        ghost
+                        onClick={cx.listener(|this, _, _, cx| this.zoom_out(cx))}
+                    />
+                    <Button("image-zoom-reset")
+                        label={zoom_label}
+                        xsmall
+                        ghost
+                        onClick={cx.listener(|this, _, _, cx| this.reset_zoom(cx))}
+                    />
+                    <Button("image-zoom-in")
+                        label="+"
+                        xsmall
+                        ghost
+                        onClick={cx.listener(|this, _, _, cx| this.zoom_in(cx))}
+                    />
+                    <div class="text-xs" text_color={muted_foreground}>{dimensions}</div>
+                </div>
+                <div
+                    class="flex flex-row flex-1 min-h-0 overflow-hidden items-center justify-center"
+                    bg={muted}
+                >
+                    <img
+                        src={path}
+                        objectFit={ObjectFit::Contain}
+                        w={px(1024. * zoom)}
+                        h={px(1024. * zoom)}
+                        max_w_full
+                        max_h_full
+                    />
+                </div>
+            </div>
+        }
     }
 }
 
