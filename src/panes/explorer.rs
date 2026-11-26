@@ -12,9 +12,8 @@ use gpui::component::{
     button::{Button, ButtonVariants as _},
 };
 use gpui::{
-    App, AppContext as _, Context, Entity, EventEmitter, FocusHandle, Focusable,
-    InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString,
-    StatefulInteractiveElement as _, Styled as _, Subscription, Window, div, px,
+    App, AppContext as _, Context, Entity, EventEmitter, FocusHandle, Focusable, IntoElement,
+    ParentElement as _, Render, SharedString, Styled as _, Subscription, Window, div, px,
 };
 use gpui_rsx::rsx;
 
@@ -172,7 +171,6 @@ impl Render for ExplorerView {
         let has_root = self.workspace.read(cx).root().is_some();
         let muted = cx.theme().muted_foreground;
         let shell = self.shell.clone();
-        let workspace = self.workspace.clone();
 
         rsx! {
             <div class="flex flex-col size-full">
@@ -213,7 +211,7 @@ impl Render for ExplorerView {
                         rsx! {
                             <div class="size-full">
                                 {gpui::component::tree::tree(&tree_state, move |_ix, entry, _selected, _window, cx| {
-                                    row(entry, &workspace, &shell, cx)
+                                    row(entry, &shell, cx)
                                 })}
                             </div>
                         }
@@ -237,7 +235,6 @@ impl Render for ExplorerView {
 /// before it reaches that handler (risk R6).
 fn row(
     entry: &gpui::base::TreeEntry,
-    workspace: &Entity<Workspace>,
     shell: &gpui::WeakEntity<AppShell>,
     cx: &mut App,
 ) -> gpui::component::list::ListItem {
@@ -266,35 +263,32 @@ fn row(
     };
 
     let label = item.label.clone();
-    let workspace_for_click = workspace.clone();
     let shell_for_click = shell.clone();
     let path_for_click = path.clone();
 
     let content = rsx! {
-        <div class="flex flex-row items-center gap-1" h={px(22.)}>
+        <div class="flex flex-row items-center gap-1 w-full" h={px(22.)}>
             <div pl={px(4. + 10. * depth as f32)} />
             <div text_color={muted}>{chevron}</div>
-            {gpui::div()
-                .text_xs()
-                .overflow_hidden()
-                .text_color(foreground)
-                .id(SharedString::from(format!("explorer-row-{}", item.id)))
-                .on_click(move |_, window, cx| {
-                    // A file's click opens it; a directory's is left to the
-                    // tree, which toggles it.
-                    if is_dir {
-                        return;
-                    }
-                    cx.stop_propagation();
-                    let path = path_for_click.clone();
-                    let _ = shell_for_click.update(cx, |shell, cx| {
-                        shell.open_path(path, window, cx);
-                    });
-                    let _ = &workspace_for_click;
-                })
-                .child(label)}
+            <div class="text-xs truncate" text_color={foreground}>{label}</div>
         </div>
     };
 
-    ListItem::new(item.id.clone()).child(content)
+    // The click goes on the whole row, not on the label: a click anywhere in a
+    // file's row should open it, and the row is what the pointer actually
+    // covers. A directory's click falls through to the tree, which toggles it
+    // (risk R6 — the row handler runs first, so a file claims the click before
+    // the tree's any-click toggle can fire).
+    let list_item = ListItem::new(item.id.clone()).child(content);
+    if is_dir {
+        list_item
+    } else {
+        list_item.on_click(move |_, window, cx| {
+            cx.stop_propagation();
+            let path = path_for_click.clone();
+            let _ = shell_for_click.update(cx, |shell, cx| {
+                shell.open_path(path, window, cx);
+            });
+        })
+    }
 }
