@@ -383,8 +383,7 @@ impl TabGroupRenderer for ShellTabs {
                 tabs.push(
                     Tab::new()
                         .label(SharedString::from(panel.panel_name(cx)))
-                        .selected(ix == active)
-                        .px(px(6.)),
+                        .selected(ix == active),
                 );
                 continue;
             };
@@ -435,12 +434,23 @@ impl TabGroupRenderer for ShellTabs {
                     }
                 });
 
+            // The button keeps its space while hidden -- `invisible` paints
+            // nothing but still lays out -- so a tab does not change width when
+            // the pointer enters it. The group is the tab itself.
+            let hover_group = SharedString::from(format!("shell-tab-{ix}"));
+            let close_suffix = div()
+                .invisible()
+                .group_hover(hover_group.clone(), |this| this.visible())
+                .child(close_button);
+
             tabs.push(
                 Tab::new()
                     .label(title)
                     .selected(ix == active)
-                    .px(px(6.))
-                    .when(closable, |this| this.suffix(close_button))
+                    .group(hover_group)
+                    .pl(px(16.))
+                    .pr(px(1.))
+                    .when(closable, |this| this.suffix(close_suffix))
                     .on_click(move |_, window, cx| {
                         group_for_select.select_tab(ix, window, cx);
                     }),
