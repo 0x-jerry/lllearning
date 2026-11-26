@@ -16,8 +16,9 @@ use gpui::component::{
     input::{Editor, EditorState, InputEvent},
 };
 use gpui::{
-    App, AppContext as _, Context, Entity, EventEmitter, FocusHandle, Focusable, IntoElement,
-    ParentElement as _, Render, SharedString, Styled as _, Subscription, Window, div, px,
+    App, AppContext as _, Context, Entity, EventEmitter, FocusHandle, Focusable,
+    InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString, Styled as _,
+    Subscription, Window, div, px,
 };
 use gpui_rsx::rsx;
 
@@ -26,6 +27,25 @@ use super::{DocumentContent, DocumentController, DocumentProvider, OpenContext, 
 /// Scores: high enough that nothing else claims a text file by accident, low
 /// enough that every specific provider beats it.
 const SCORE: u8 = 10;
+
+/// The key context the editor panes put on their root element.
+///
+/// Bindings scoped to this context reach a document viewer and nothing else, so
+/// `ctrl-s` cannot be swallowed by an unrelated input elsewhere in the window.
+pub const DOCUMENT_CONTEXT: &str = "DocumentViewer";
+
+gpui::actions!(lllearning, [SaveDocument]);
+
+/// Bind `ctrl-s` (and `cmd-s` on macOS) to [`SaveDocument`].
+///
+/// `ctrl-s` is unbound everywhere in the framework, so claiming it here does not
+/// shadow anything. The binding is registered once, at startup.
+pub fn bind_keys(cx: &mut App) {
+    cx.bind_keys([
+        gpui::KeyBinding::new("ctrl-s", SaveDocument, Some(DOCUMENT_CONTEXT)),
+        gpui::KeyBinding::new("cmd-s", SaveDocument, Some(DOCUMENT_CONTEXT)),
+    ]);
+}
 
 /// The text viewer.
 pub struct TextProvider;
@@ -215,7 +235,17 @@ impl Render for TextView {
         let stale = self.stale;
 
         rsx! {
-            <div class="flex flex-col size-full">
+            <div
+                class="flex flex-col size-full"
+                key_context={DOCUMENT_CONTEXT}
+                onAction={cx.listener(|this, _: &SaveDocument, window, cx| {
+                    // A save that fails is reported rather than swallowed: the
+                    // tab must not lose its dirty marker on a failed write.
+                    if let Err(error) = this.save(window, cx) {
+                        eprintln!("{error}");
+                    }
+                })}
+            >
                 {if stale {
                     rsx! {
                         <div

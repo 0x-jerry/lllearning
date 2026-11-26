@@ -35,4 +35,7 @@ pub fn init(cx: &mut App) {
     // The dock's builder for document tabs, so a restored session can rebuild
     // the files it had open.
     documents::register_documents(cx);
+    // `ctrl-s` / `cmd-s`, scoped to a document viewer so no other input in the
+    // window can claim it.
+    documents::text::bind_keys(cx);
 }

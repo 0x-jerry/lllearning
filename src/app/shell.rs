@@ -71,26 +71,23 @@ impl AppShell {
         let workspace = Workspace::new(cx);
         let (dock, skin) = ShellSkin::dock_area("workspace", Some(1), window, cx);
 
-        let shell = cx.new(|cx| {
-            let mut shell = Self {
-                focus_handle: cx.focus_handle(),
-                dock: dock.clone(),
-                workspace: workspace.clone(),
-                active_panes: HashMap::new(),
-                documents: Vec::new(),
-                active_document: None,
-                browser_request: None,
-                save_task: None,
-                _subscriptions: Vec::new(),
-            };
-            shell.subscribe_all(window, cx);
-            shell.restore_session(session, window, cx);
-            shell
+        // The shell exists first, with nothing restored. Its panel builders run
+        // inside the dock's registry, and that registry is reached through
+        // `ShellHandles` — which cannot name the shell before the shell exists.
+        // So construction is two steps: build, publish, then restore.
+        let shell = cx.new(|cx| Self {
+            focus_handle: cx.focus_handle(),
+            dock: dock.clone(),
+            workspace: workspace.clone(),
+            active_panes: HashMap::new(),
+            documents: Vec::new(),
+            active_document: None,
+            browser_request: None,
+            save_task: None,
+            _subscriptions: Vec::new(),
         });
 
-        // A panel builder runs inside the dock's registry, which carries only
-        // the dock area and the persisted panel state; the workspace and the
-        // shell are published here so a rebuilt pane can reach them.
+        // Now a rebuilt pane can find the workspace and the shell.
         ShellHandles::set(cx, workspace, shell.downgrade());
 
         // The skin asks the shell before it closes a tab, because only the
@@ -101,6 +98,11 @@ impl AppShell {
                 .update(cx, |shell, cx| shell.allow_close(panel_id, window, cx))
                 .unwrap_or(true)
         }));
+
+        shell.update(cx, |shell, cx| {
+            shell.subscribe_all(window, cx);
+            shell.restore_session(session, window, cx);
+        });
 
         // Closing the window hides it to the tray rather than quitting; the
         // tray's Quit is what ends the app.

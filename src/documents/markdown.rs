@@ -15,10 +15,11 @@ use gpui::component::{
     input::{Editor, EditorState, InputEvent},
 };
 use gpui::{
-    App, AppContext as _, Context, Entity, EventEmitter, FocusHandle, Focusable, IntoElement,
-    ParentElement as _, Render, SharedString, Styled as _, Subscription, Window, div,
-    prelude::FluentBuilder as _,
+    App, AppContext as _, Context, Entity, EventEmitter, FocusHandle, Focusable,
+    InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString, Styled as _,
+    Subscription, Window, div, px,
 };
+use gpui_rsx::rsx;
 
 use super::{DocumentContent, DocumentController, DocumentProvider, OpenContext, Sniff, sniff};
 
@@ -216,71 +217,77 @@ impl Render for MarkdownView {
         let text = self.editor.read(cx).value();
         let show_editor = self.layout != Layout::PreviewOnly;
         let show_preview = self.layout != Layout::EditorOnly;
+        let stale = self.stale;
+        let warning = cx.theme().warning;
+        let warning_foreground = cx.theme().warning_foreground;
+        let border = cx.theme().border;
+        let muted = cx.theme().muted_foreground;
+        let layout_label = self.layout_label();
 
-        div()
-            .size_full()
-            .flex()
-            .flex_col()
-            .when(self.stale, |this| {
-                this.child(
-                    div()
-                        .px_2()
-                        .py_1()
-                        .text_xs()
-                        .bg(cx.theme().warning)
-                        .text_color(cx.theme().warning_foreground)
-                        .child("This file changed on disk."),
-                )
-            })
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .px_2()
-                    .py_1()
-                    .border_b_1()
-                    .border_color(cx.theme().border)
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(cx.theme().muted_foreground)
-                            .child("Markdown"),
-                    )
-                    .child(
-                        Button::new("markdown-layout")
-                            .label(self.layout_label())
-                            .xsmall()
-                            .ghost()
-                            .on_click(cx.listener(|this, _, _, cx| this.cycle_layout(cx))),
-                    ),
-            )
-            .child(
-                div()
-                    .flex()
-                    .flex_row()
-                    .flex_1()
-                    .min_h_0()
-                    .when(show_editor, |this| {
-                        this.child(
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .child(Editor::new(&self.editor).size_full()),
-                        )
-                    })
-                    .when(show_editor && show_preview, |this| {
-                        this.child(div().w_1().h_full().bg(cx.theme().border).flex_none())
-                    })
-                    .when(show_preview, |this| {
-                        this.child(
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .overflow_hidden()
-                                .child(gpui::base::markdown(text).scrollable(true)),
-                        )
-                    }),
-            )
+        rsx! {
+            <div
+                class="flex flex-col size-full"
+                key_context={super::text::DOCUMENT_CONTEXT}
+                onAction={cx.listener(|this, _: &super::text::SaveDocument, window, cx| {
+                    // A save that fails is reported rather than swallowed: the
+                    // tab must not lose its dirty marker on a failed write.
+                    if let Err(error) = this.save(window, cx) {
+                        eprintln!("{error}");
+                    }
+                })}
+            >
+                {if stale {
+                    rsx! {
+                        <div
+                            class="px-2 py-1 text-xs"
+                            bg={warning}
+                            text_color={warning_foreground}
+                        >
+                            {"This file changed on disk."}
+                        </div>
+                    }
+                } else {
+                    rsx! { <div /> }
+                }}
+                <div
+                    class="flex flex-row items-center justify-between px-2 py-1"
+                    border_b_1
+                    border_color={border}
+                >
+                    <div class="text-xs" text_color={muted}>{"Markdown"}</div>
+                    <Button("markdown-layout")
+                        label={layout_label}
+                        xsmall
+                        ghost
+                        onClick={cx.listener(|this, _, _, cx| this.cycle_layout(cx))}
+                    />
+                </div>
+                <div class="flex flex-row flex-1 min-h-0">
+                    {if show_editor {
+                        rsx! {
+                            <div class="flex-1 min-w-0">
+                                {Editor::new(&self.editor).size_full()}
+                            </div>
+                        }
+                    } else {
+                        rsx! { <div /> }
+                    }}
+                    {if show_editor && show_preview {
+                        rsx! { <div w={px(1.)} h_full flex_none bg={border} /> }
+                    } else {
+                        rsx! { <div /> }
+                    }}
+                    {if show_preview {
+                        rsx! {
+                            <div class="flex-1 min-w-0 overflow-hidden">
+                                {gpui::base::markdown(text).scrollable(true)}
+                            </div>
+                        }
+                    } else {
+                        rsx! { <div /> }
+                    }}
+                </div>
+            </div>
+        }
     }
 }
