@@ -1,0 +1,227 @@
+//! The explorer: the workspace folder's tree.
+//!
+//! A toolbar with the folder name and the actions that change it, then the
+//! lazily-loaded tree. Expanding a directory asks the workspace to read it;
+//! clicking a file asks the shell to open it.
+
+use std::sync::Arc;
+
+use gpui::base::{TreeEvent, TreeState};
+use gpui::component::{
+    ActiveTheme as _, Sizable as _,
+    button::{Button, ButtonVariants as _},
+};
+use gpui::{
+    App, AppContext as _, Context, Entity, EventEmitter, FocusHandle, Focusable,
+    InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString, Styled as _,
+    Subscription, Window, div, prelude::FluentBuilder as _, px,
+};
+use gpui_rsx::rsx;
+
+use crate::{
+    app::shell::AppShell,
+    icons,
+    panes::{PaneContext, PaneProvider, PaneSlot},
+    workspace::{Workspace, fs_util},
+};
+
+/// The explorer's provider.
+pub struct ExplorerPane;
+
+impl PaneProvider for ExplorerPane {
+    fn id(&self) -> &'static str {
+        "explorer"
+    }
+
+    fn title(&self) -> SharedString {
+        SharedString::from("Explorer")
+    }
+
+    fn icon(&self) -> lucide_icons::Icon {
+        lucide_icons::Icon::Files
+    }
+
+    fn slot(&self) -> PaneSlot {
+        PaneSlot::Left
+    }
+
+    fn order(&self) -> i32 {
+        0
+    }
+
+    fn build(
+        &self,
+        ctx: PaneContext,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Arc<dyn gpui::component::dock::BasePanelView> {
+        let _ = ctx.saved;
+        let view = cx.new(|cx| ExplorerView::new(ctx.workspace, ctx.shell, window, cx));
+        gpui::component::dock::panel_handle(view)
+    }
+}
+
+/// The explorer's state.
+pub struct ExplorerView {
+    focus_handle: FocusHandle,
+    workspace: Entity<Workspace>,
+    shell: gpui::WeakEntity<AppShell>,
+    /// Dropped with the view, so the tree subscription does not outlive it.
+    _tree_events: Subscription,
+}
+
+impl ExplorerView {
+    fn new(
+        workspace: Entity<Workspace>,
+        shell: gpui::WeakEntity<AppShell>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let focus_handle = cx.focus_handle();
+        let tree_state = workspace.read(cx).tree_state().clone();
+        // An expand or collapse is the only thing the tree reports; the
+        // workspace does the reading.
+        let tree_events = cx.subscribe_in(
+            &tree_state,
+            window,
+            |this: &mut Self, _, event: &TreeEvent, window, cx| {
+                if let TreeEvent::Expanded(id) = event {
+                    this.on_expanded(id, window, cx);
+                }
+            },
+        );
+
+        Self {
+            focus_handle,
+            workspace,
+            shell,
+            _tree_events: tree_events,
+        }
+    }
+
+    /// Read a directory's children when the tree opens it.
+    fn on_expanded(&mut self, id: &SharedString, window: &mut Window, cx: &mut Context<Self>) {
+        if crate::workspace::tree::DirTree::is_placeholder_id(id) {
+            return;
+        }
+        let path = crate::workspace::tree::DirTree::path_for_id(id);
+        self.workspace
+            .update(cx, |workspace, cx| workspace.toggle_dir(path, window, cx));
+        cx.notify();
+    }
+
+    fn pick_folder(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.workspace
+            .update(cx, |workspace, cx| workspace.pick_root(window, cx));
+    }
+
+    fn refresh(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.workspace
+            .update(cx, |workspace, cx| workspace.refresh(window, cx));
+    }
+
+    /// The folder name, or a placeholder when none is open.
+    fn root_label(&self, cx: &App) -> SharedString {
+        match self.workspace.read(cx).root() {
+            Some(path) => SharedString::from(fs_util::file_name_of(path)),
+            None => SharedString::from("No folder open"),
+        }
+    }
+}
+
+impl Focusable for ExplorerView {
+    fn focus_handle(&self, _: &App) -> FocusHandle {
+        self.focus_handle.clone()
+    }
+}
+
+impl EventEmitter<gpui::base::dock::PanelEvent> for ExplorerView {}
+
+impl gpui::base::dock::Panel for ExplorerView {
+    fn panel_name(&self) -> &'static str {
+        "explorer"
+    }
+
+    fn dump(&self, _cx: &App) -> gpui::component::dock::PanelState {
+        gpui::component::dock::PanelState::new("explorer")
+    }
+}
+
+impl gpui::component::dock::Panel for ExplorerView {
+    fn tab_name(&self, _cx: &App) -> Option<SharedString> {
+        Some(SharedString::from("Explorer"))
+    }
+
+    fn title(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        SharedString::from("Explorer")
+    }
+
+    fn inner_padding(&self, _cx: &App) -> bool {
+        false
+    }
+
+    fn title_bar(&self, _cx: &App) -> bool {
+        false
+    }
+}
+
+impl Render for ExplorerView {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let label = self.root_label(cx);
+        let tree_state = self.workspace.read(cx).tree_state().clone();
+        let has_root = self.workspace.read(cx).root().is_some();
+        let muted = cx.theme().muted_foreground;
+
+        rsx! {
+            <div class="flex flex-col size-full">
+                <div
+                    class="flex flex-row items-center justify-between gap-1 px-2 py-1"
+                    border_b_1
+                    border_color={cx.theme().border}
+                >
+                    <div class="flex flex-row items-center gap-1 min-w-0">
+                        {icons::icon(lucide_icons::Icon::FolderOpen, 14.)}
+                        <div class="text-xs truncate">{label}</div>
+                    </div>
+                    <div class="flex flex-row items-center gap-1">
+                        <Button("explorer-pick")
+                            ghost
+                            xsmall
+                            tooltip={"Change folder…"}
+                            onClick={cx.listener(|this, _, window, cx| {
+                                this.pick_folder(window, cx)
+                            })}
+                        >
+                            {icons::icon(lucide_icons::Icon::FolderOpen, 14.)}
+                        </Button>
+                        <Button("explorer-refresh")
+                            ghost
+                            xsmall
+                            tooltip={"Refresh"}
+                            onClick={cx.listener(|this, _, window, cx| {
+                                this.refresh(window, cx)
+                            })}
+                        >
+                            {icons::icon(lucide_icons::Icon::RefreshCw, 14.)}
+                        </Button>
+                    </div>
+                </div>
+                <div class="flex-1 min-h-0 overflow-hidden">
+                    {if has_root {
+                        rsx! { <div class="size-full">{tree_state}</div> }
+                    } else {
+                        rsx! {
+                            <div class="p-2 text-xs" text_color={muted}>
+                                {"Choose a folder to browse its files."}
+                            </div>
+                        }
+                    }}
+                </div>
+            </div>
+        }
+    }
+}
+
+/// The tree state type, re-exported so a test can name it without the dock
+/// crate.
+pub type ExplorerTree = Entity<TreeState>;
