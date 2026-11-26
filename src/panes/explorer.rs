@@ -255,9 +255,9 @@ fn row(
     // open and closed folders say the state, so a separate chevron would only
     // repeat it. A file gets its language's glyph, from the nerd font.
     let icon = if is_dir {
-        icons::folder_icon(expanded, 14.)
+        icons::folder_icon(expanded, 12.)
     } else {
-        icons::file_icon(&path, 14., cx)
+        icons::file_icon(&path, 12., cx)
     };
 
     let label = item.label.clone();
@@ -268,7 +268,7 @@ fn row(
         <div class="flex flex-row items-center gap-1 w-full" h={px(22.)}>
             <div pl={px(4. + 10. * depth as f32)} />
             {icon}
-            <div class="text-xs truncate" text_color={foreground}>{label}</div>
+            <div class="text-xs truncate" pl={px(2.)} text_color={foreground}>{label}</div>
         </div>
     };
 

@@ -170,6 +170,131 @@ mod tests {
     }
 
     #[test]
+    fn the_font_covers_every_glyph_the_devicons_table_uses() {
+        // `devicons` draws from the private use area, and a nerd font only has
+        // the code points its own version shipped. The font vendored here was
+        // once an older Symbols Nerd Font that had no `.toml` glyph at all, so
+        // a row drew tofu rather than an icon — nothing else in the build can
+        // see that, because the table and the font are both opaque data.
+        let coverage = Coverage::of(DEVICONS_FONT_BYTES);
+        let missing: Vec<char> = COMMON_FILE_NAMES
+            .iter()
+            .map(|name| devicons::icon_for_file(*name, &Some(devicons::Theme::Dark)).icon)
+            // An ASCII glyph is `devicons`' own fallback and renders in any
+            // font, so only the private-use ones have to be in the nerd font.
+            .filter(|glyph| !glyph.is_ascii() && !coverage.has(*glyph))
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "the nerd font has no glyph for {missing:?}; update the vendored font"
+        );
+    }
+
+    /// A sample of the file types a workspace of notes and code is made of.
+    /// Not the whole `devicons` table: a handful of its entries are plain
+    /// ASCII or math symbols that a nerd font never carries.
+    const COMMON_FILE_NAMES: [&str; 16] = [
+        "Cargo.toml",
+        "main.rs",
+        "README.md",
+        "package.json",
+        "index.ts",
+        "index.js",
+        "Cargo.lock",
+        "ci.yml",
+        "notes.txt",
+        "index.html",
+        "style.css",
+        "main.py",
+        "main.go",
+        "run.sh",
+        "Dockerfile",
+        "Makefile",
+    ];
+
+    /// Which code points a font's `cmap` maps, for the coverage check above.
+    struct Coverage(std::collections::HashSet<u32>);
+
+    impl Coverage {
+        fn of(font: &[u8]) -> Self {
+            let mut mapped = std::collections::HashSet::new();
+            let tables = be_u16(font, 4).unwrap_or(0);
+            let Some(cmap) = (0..tables)
+                .map(|i| 12 + i * 16)
+                .find(|&at| font.get(at..at + 4) == Some(b"cmap"))
+                .and_then(|at| be_u32(font, at + 8))
+            else {
+                return Self(mapped);
+            };
+            for record in 0..be_u16(font, cmap + 2).unwrap_or(0) {
+                let at = cmap + 4 + record * 8;
+                let subtable = cmap + be_u32(font, at + 4).unwrap_or(0);
+                match be_u16(font, subtable).unwrap_or(0) {
+                    4 => Self::format_4(font, subtable, &mut mapped),
+                    // The icon fonts ship a format 12 subtable for the planes
+                    // above the BMP, which is where newer nerd glyphs live.
+                    12 => Self::format_12(font, subtable, &mut mapped),
+                    _ => {}
+                }
+            }
+            Self(mapped)
+        }
+
+        fn format_4(font: &[u8], subtable: usize, mapped: &mut std::collections::HashSet<u32>) {
+            let segments = be_u16(font, subtable + 6).unwrap_or(0) / 2;
+            let ends = subtable + 14;
+            let starts = ends + segments * 2 + 2;
+            let deltas = starts + segments * 2;
+            let offsets = deltas + segments * 2;
+            for segment in 0..segments {
+                let end = be_u16(font, ends + segment * 2).unwrap_or(0xffff);
+                let start = be_u16(font, starts + segment * 2).unwrap_or(0xffff);
+                let delta = be_u16(font, deltas + segment * 2).unwrap_or(0);
+                let offset = be_u16(font, offsets + segment * 2).unwrap_or(0);
+                for code in start..=end {
+                    if code == 0xffff {
+                        break;
+                    }
+                    let glyph = if offset == 0 {
+                        (code as u16).wrapping_add(delta as u16)
+                    } else {
+                        // The glyph index lives in `glyphIdArray`, indexed from
+                        // the segment's start, and is relative to it.
+                        let at = offsets + segment * 2 + offset + (code - start) * 2;
+                        match be_u16(font, at).unwrap_or(0) {
+                            0 => 0,
+                            id => (id as u16).wrapping_add(delta as u16),
+                        }
+                    };
+                    if glyph != 0 {
+                        mapped.insert(code as u32);
+                    }
+                }
+            }
+        }
+
+        fn format_12(font: &[u8], subtable: usize, mapped: &mut std::collections::HashSet<u32>) {
+            let groups = be_u32(font, subtable + 12).unwrap_or(0);
+            for group in 0..groups {
+                let at = subtable + 16 + group * 12;
+                let start = be_u32(font, at).unwrap_or(0) as u32;
+                let end = be_u32(font, at + 4).unwrap_or(0) as u32;
+                // A group whose first glyph is 0 has no glyphs to record.
+                if be_u32(font, at + 8).unwrap_or(0) == 0 {
+                    continue;
+                }
+                for code in start..=end {
+                    mapped.insert(code);
+                }
+            }
+        }
+
+        fn has(&self, glyph: char) -> bool {
+            self.0.contains(&(glyph as u32))
+        }
+    }
+
+    #[test]
     fn a_known_extension_gets_a_glyph_outside_ascii() {
         // The default entry is `*`, which draws whether or not the nerd font
         // loaded; a real extension's glyph is what proves the table was read.

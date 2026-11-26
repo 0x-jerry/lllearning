@@ -42,7 +42,7 @@ nothing extra. For an installer, `cargo packager --release` writes
 ## Develop
 
 ```bash
-cargo test                         # 66 tests, ~0.3s
+cargo test                         # 67 tests, ~0.3s
 cargo fmt --check
 cargo clippy --all-targets --all-features -- -D warnings
 ```
