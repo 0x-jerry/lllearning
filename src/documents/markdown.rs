@@ -122,9 +122,9 @@ impl DocumentController for MarkdownController {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 enum Layout {
     /// Editor and preview side by side.
-    #[default]
     Split,
     /// Editor only.
+    #[default]
     EditorOnly,
     /// Preview only.
     PreviewOnly,
