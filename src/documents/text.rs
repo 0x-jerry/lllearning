@@ -265,7 +265,7 @@ impl Render for TextView {
                     rsx! { <div /> }
                 }}
                 <div class="flex-1 min-h-0">
-                    {Editor::new(&self.editor).size_full()}
+                    {Editor::new(&self.editor).size_full().bordered(false)}
                 </div>
             </div>
         }

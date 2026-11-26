@@ -266,7 +266,7 @@ impl Render for MarkdownView {
                     {if show_editor {
                         rsx! {
                             <div class="flex-1 min-w-0">
-                                {Editor::new(&self.editor).size_full()}
+                                {Editor::new(&self.editor).size_full().bordered(false)}
                             </div>
                         }
                     } else {
