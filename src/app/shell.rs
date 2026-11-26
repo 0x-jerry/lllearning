@@ -78,6 +78,14 @@ pub struct AppShell {
     /// divider drag; this is what makes it happen only when the displayed *file*
     /// actually changed.
     revealed: Option<PathBuf>,
+    /// Set while [`Self::restore_session`] runs.
+    ///
+    /// The restore calls `Workspace::set_root`, which emits
+    /// [`WorkspaceEvent::RootChanged`] — and that event means "the user opened a
+    /// different folder", whose handling closes every tab and resets both
+    /// docks. The restore's own root is not that, so the flag tells the handler
+    /// to leave the tabs and panes the session just restored alone.
+    restoring: bool,
     /// A URL the browser pane should load next, put here by a viewer that cannot
     /// play a file itself.
     browser_request: Option<String>,
@@ -138,6 +146,7 @@ impl AppShell {
             sides: HashMap::new(),
             columns: columns.clone(),
             revealed: None,
+            restoring: false,
             browser_request: None,
             save_task: None,
             _subscriptions: Vec::new(),
@@ -145,6 +154,19 @@ impl AppShell {
 
         shell.update(cx, |shell, cx| {
             shell.subscribe_all(window, cx);
+            // The docks' *state* only: which pane each shows and how wide, with
+            // no pane built. That is cheap and it is what the first frame needs
+            // to lay the three columns out at the widths the user chose.
+            shell.apply_saved_sides(&session, cx);
+
+            // The restore itself: the workspace root and the tabs now, the panes
+            // after the frame they are first drawn in has gone out. Building a
+            // side pane is the expensive part (the browser's WebView2 alone is
+            // several hundred milliseconds), and this closure runs inside the
+            // window's build closure — before the window's first frame — so
+            // anything expensive here is time the user spends looking at a black
+            // rectangle, which is what the platform's window class paints until
+            // GPUI's first frame reaches it (risk R19).
             shell.restore_session(session, window, cx);
         });
 
@@ -240,6 +262,12 @@ impl AppShell {
     ) {
         match event {
             WorkspaceEvent::RootChanged => {
+                // The root the restore just opened is not a folder switch: the
+                // tabs the session named belong to that very folder, and closing
+                // them here is how a restart would silently lose them.
+                if std::mem::take(&mut self.restoring) {
+                    return;
+                }
                 // A different folder means the old tabs no longer belong to the
                 // workspace, so they are closed rather than left pointing at
                 // files that are not in the tree.
@@ -319,7 +347,28 @@ impl AppShell {
         }
     }
 
+    /// Apply each dock's saved pane id, open state and width, building nothing.
+    ///
+    /// [`SideView::apply`] is pure bookkeeping, so this is cheap enough for the
+    /// window's build closure, and it is what lets the first frame place the
+    /// columns at the widths the session named instead of jumping to the
+    /// defaults and then back.
+    fn apply_saved_sides(&mut self, session: &SessionState, cx: &mut Context<Self>) {
+        for slot in PaneSlot::ALL {
+            let saved = match slot {
+                PaneSlot::Left => &session.left,
+                PaneSlot::Right => &session.right,
+            };
+            self.side(slot, cx).apply(saved, cx);
+        }
+    }
+
     /// Restore the saved session, falling back to the default layout.
+    ///
+    /// The cheap half — the workspace root and the tabs — runs as soon as the
+    /// window exists. The expensive half — building each dock's pane, which
+    /// constructs the browser's WebView2 — runs once the frame carrying the tree
+    /// and the tabs has been presented (see [`Self::new`]).
     fn restore_session(
         &mut self,
         session: SessionState,
@@ -327,21 +376,23 @@ impl AppShell {
         cx: &mut Context<Self>,
     ) {
         // The workspace first: the panes read it as they are built.
+        //
+        // `set_root` emits `RootChanged` on success, and that event's handler
+        // closes every tab and resets both docks — which would throw away the
+        // documents and panes this function is about to restore. The flag is
+        // therefore raised around the call. It is lowered again here when the
+        // folder could not be opened, because `set_root` reports that as an
+        // `Error` and emits no `RootChanged` at all; a flag left up would then
+        // swallow the user's next, genuine folder switch.
         if let Some(root) = session.workspace_root.clone()
             && root.exists()
         {
+            self.restoring = true;
             self.workspace
                 .update(cx, |workspace, cx| workspace.set_root(root, window, cx));
-        }
-
-        for slot in PaneSlot::ALL {
-            let saved = match slot {
-                PaneSlot::Left => &session.left,
-                PaneSlot::Right => &session.right,
-            };
-            let side = self.side(slot, cx);
-            side.apply(saved, cx);
-            side.ensure_active(window, cx);
+            if self.workspace.read(cx).root().is_none() {
+                self.restoring = false;
+            }
         }
 
         for saved in &session.documents {
@@ -370,6 +421,29 @@ impl AppShell {
             let path = document.read(cx).path().to_path_buf();
             self.reveal(&path, window, cx);
         }
+
+        // Yielding here is what makes the frame above reach the screen before
+        // the panes are built. A foreground task's timer resolves on the
+        // executor's own turn, which is between frame iterations; `defer_in` and
+        // `on_next_frame` both run *inside* one, before it presents, so building
+        // the panes there delays the very frame this is trying to get out. The
+        // task is spawned from a `cx` that still has its window, which is why the
+        // panes can be built with `update_in` when it wakes.
+        //
+        // `apply_saved_sides` already recorded which pane each dock shows, so all
+        // that is left is to build them.
+        cx.spawn_in(window, async move |this, cx| {
+            cx.background_executor()
+                .timer(std::time::Duration::ZERO)
+                .await;
+            let _ = this.update_in(cx, |this, window, cx| {
+                for slot in PaneSlot::ALL {
+                    this.side(slot, cx).ensure_active(window, cx);
+                }
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
     /// Open a file in the centre.

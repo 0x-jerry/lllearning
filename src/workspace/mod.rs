@@ -97,6 +97,10 @@ impl Workspace {
     /// Canonicalises first, so every path derived from the root is absolute and
     /// free of `..`. A folder that no longer exists is reported rather than
     /// left as a broken root.
+    ///
+    /// The folder's listing and its watcher are read on the background
+    /// executor (risk R8). The root is published immediately, so the panes that
+    /// read it are not held up, and the tree fills in when the listing lands.
     pub fn set_root(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
         let canonical = match std::fs::canonicalize(&path) {
             Ok(canonical) => canonical,
@@ -109,7 +113,12 @@ impl Workspace {
             }
         };
 
-        if let Err(error) = self.tree.set_root(canonical.clone()) {
+        // `read_dir` used to happen here, to prove the folder was readable
+        // before it was published. It is the same `read_dir` the background read
+        // below performs, so it happens once, there — but a root that cannot be
+        // read at all is still refused up front, because publishing it would
+        // leave a folder in the tree that can never be expanded.
+        if let Err(error) = std::fs::read_dir(&canonical) {
             cx.emit(WorkspaceEvent::Error(format!(
                 "{} could not be read: {error}",
                 canonical.display()
@@ -117,11 +126,43 @@ impl Workspace {
             return;
         }
 
+        self.tree.set_root_unread(canonical.clone());
         self.root = Some(canonical.clone());
         self.restart_watcher(&canonical, window, cx);
         self.rebuild_tree_state(cx);
         cx.emit(WorkspaceEvent::RootChanged);
         cx.notify();
+
+        self.read_root_listing(canonical, window, cx);
+    }
+
+    /// Read the new root's children off the UI thread and install them.
+    fn read_root_listing(&mut self, root: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+        let this = cx.weak_entity();
+        let dir = root.clone();
+        cx.spawn_in(window, async move |_, cx| {
+            let listing = cx
+                .background_spawn(async move { DirTree::read_listing(&dir) })
+                .await;
+            let _ = this.update_in(cx, |this, _, cx| {
+                let (dir, children, truncated) = listing;
+                // An empty listing for a directory that cannot be read is how
+                // `read_listing` reports a failure, so the root is only accepted
+                // when it produced something or is genuinely empty on disk.
+                if children.is_empty() && !dir.is_dir() {
+                    cx.emit(WorkspaceEvent::Error(format!(
+                        "{} could not be read",
+                        dir.display()
+                    )));
+                    return;
+                }
+                this.tree.insert_children(dir.clone(), children, truncated);
+                this.rebuild_tree_state(cx);
+                cx.emit(WorkspaceEvent::TreeChanged(dir));
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
     /// Forget the open folder, its tree and its watcher.
@@ -331,36 +372,53 @@ impl Workspace {
     }
 
     /// Start watching `root`, replacing any previous watcher.
+    ///
+    /// The watch is registered on the background executor: `notify` walks the
+    /// tree to install a recursive watch, which is a filesystem call like any
+    /// other and does not belong on the UI thread (risk R8). The status bar
+    /// reads `is_watching`, so the watcher is only published once it exists.
     fn restart_watcher(&mut self, root: &Path, window: &Window, cx: &mut Context<Self>) {
         // Dropping these stops the old watch and its drain task.
         self.watcher = None;
         self.watcher_task = None;
 
         let root = root.to_path_buf();
-        match watcher::FileWatcher::start(root.clone()) {
-            Ok((file_watcher, receiver)) => {
-                self.watcher = Some(file_watcher);
-                self.watcher_task = Some(cx.spawn_in(window, async move |this, cx| {
-                    while let Ok(paths) = receiver.recv().await {
-                        if paths.is_empty() {
-                            continue;
+        let this = cx.weak_entity();
+        cx.spawn_in(window, async move |_, cx| {
+            let watching = cx
+                .background_spawn({
+                    let root = root.clone();
+                    async move { watcher::FileWatcher::start(root) }
+                })
+                .await;
+
+            let _ = this.update_in(cx, |this, window, cx| match watching {
+                Ok((file_watcher, receiver)) => {
+                    this.watcher = Some(file_watcher);
+                    this.watcher_task = Some(cx.spawn_in(window, async move |this, cx| {
+                        while let Ok(paths) = receiver.recv().await {
+                            if paths.is_empty() {
+                                continue;
+                            }
+                            let done = this.update_in(cx, |this, _, cx| {
+                                this.on_disk_changes(&paths, cx);
+                            });
+                            if done.is_err() {
+                                break;
+                            }
                         }
-                        let done = this.update_in(cx, |this, _, cx| {
-                            this.on_disk_changes(&paths, cx);
-                        });
-                        if done.is_err() {
-                            break;
-                        }
-                    }
-                }));
-            }
-            Err(error) => {
-                cx.emit(WorkspaceEvent::Error(format!(
-                    "watching {} failed: {error}",
-                    root.display()
-                )));
-            }
-        }
+                    }));
+                    cx.notify();
+                }
+                Err(error) => {
+                    cx.emit(WorkspaceEvent::Error(format!(
+                        "watching {} failed: {error}",
+                        root.display()
+                    )));
+                }
+            });
+        })
+        .detach();
     }
 
     /// Fold a batch of watcher paths into cache updates and app events.

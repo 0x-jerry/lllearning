@@ -228,6 +228,34 @@ there is what dismisses it.
 switch would recreate the WebView2 — slow, and it re-arms the profile lock (risk
 R2) — and would throw away the explorer's expansion state.
 
+**The window's build closure runs before its first frame, so nothing expensive
+belongs in it.** Until GPUI presents a frame the window is a black rectangle,
+which is what the platform's window class fills it with. Building a side pane is
+the expensive part — the browser's WebView2 alone is a few hundred milliseconds
+— so `AppShell::new` does only the cheap part (entities, subscriptions, the
+docks' *saved state* via `SideView::apply`, which builds nothing) and the
+`restore_session` that builds panes is deferred (risk R19).
+
+**`defer_in` and `on_next_frame` both run *before* a frame is presented.**
+`defer_in` runs at the end of the `App::update` that the draw is inside;
+`on_next_frame` callbacks run at the start of the next frame-loop iteration. So
+neither is "after the frame went out": a deferred restore that builds panes still
+delays the *first* present. `AppShell::new` therefore hops twice — `on_next_frame`
+from `on_next_frame` — and the callback registered by the first lands before the
+second present, which is after the chrome has been shown. The deferred callback
+is reached through the window handle, not `Entity::update_in`: that looks the
+entity's window up, and the shell is not registered with one yet, so it fails
+with "entity has no current window".
+
+**`Workspace::set_root` emits `RootChanged`, and `RootChanged` means "the user
+opened a different folder".** Its handler closes every tab and resets both
+docks. A restore calls `set_root` too, so `AppShell::restoring` is raised around
+that call and the handler returns early for it — without the flag a restart
+reopens the session's documents and then silently discards them, and the next
+session write loses them for good. The flag is lowered again when the folder
+could not be opened, because `set_root` reports that as `Error` and emits no
+`RootChanged`; a flag left up would swallow the user's next real folder switch.
+
 **A pane is built from inside `shell.update`, so it must not read the shell in
 its constructor.** `SideView::ensure` calls `PaneProvider::build` while the
 shell is leased; reading it there panics with "cannot read AppShell while it is
@@ -292,6 +320,8 @@ into a dangling lookup.
 | R16 | *(resolved)* The dock held `Arc<dyn PanelView>`; a tab's title and close button only reached the skin through `panel_handle`. | Resolved by removing the dock: panes are plain entities and the shell draws the tabs itself. |
 | R18 | **A popup window shows a taskbar button, and hiding it to remove the button deactivates it.** A window created as `Normal` is born with `WS_EX_APPWINDOW` and is already shown when the build closure runs; clearing the style on a visible window leaves the button, and the hide/show that does clear it is a deactivation, which a menu watching activation reads as a click outside. | The menu is created as `WindowKind::PopUp` (a tool window from birth, no round trip); the prompt needs the round trip and has no activation observer. See the two traps above. |
 | R17 | **An in-window dialog or popover is covered by the webview.** `window.open_dialog` and an anchored popover draw into the main window's element tree, under the browser pane's native child window — the same cause as R1, which is why R1 alone did not cover it. | Dialogs and context menus are their own window (`app/popup/`), owned by the caller and reporting their answer back. Toasts and the tab bar's own `menu` still draw in-window, so R1 still governs them. |
+| R19 | **A black window at startup.** The window is shown before its first frame is presented, and the platform's window class paints black until one is; anything expensive in the window's build closure — building a pane, reading a folder, starting the watcher — widens that gap. It measured ~570 ms on this machine, with the browser pane's WebView2 as the bulk of it. | `AppShell::new` does only cheap work and defers `restore_session` past the first presented frame; the folder listing and the watcher start on the background executor (R8). Gap is ~90 ms. See the two traps above for why the deferral needs two hops. |
+| R20 | **A restart loses every restored tab.** `Workspace::set_root` emits `RootChanged`, whose handler closes all documents and resets the docks; the restore calls `set_root` itself, so it discarded the tabs it had just reopened — and the next session write dropped them from the file too. | `AppShell::restoring` is raised around the restore's `set_root` and the `RootChanged` handler returns early for it. Only a genuine folder switch resets the tabs. |
 
 ## Verifying UI changes
 

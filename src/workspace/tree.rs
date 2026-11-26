@@ -3,7 +3,9 @@
 //!
 //! The cache holds one entry per directory that has ever been read, keyed by
 //! its canonical path. Nothing is read until a directory is expanded, so a
-//! workspace with a deep tree costs one `read_dir` at startup.
+//! workspace with a deep tree costs one `read_dir` at startup — and that one is
+//! performed on the background executor, because a `read_dir` on a network share
+//! blocks for as long as the network takes (risk R8).
 //!
 //! # Why expansion lives here and not in `TreeItem`
 //!
@@ -101,20 +103,42 @@ impl DirTree {
     }
 
     /// Start a new workspace at `root`, dropping everything cached for the old
-    /// one.
+    /// one, and read the root's children here.
     ///
-    /// The root itself is read immediately: without its children the tree has
-    /// nothing to show, and one `read_dir` is not worth deferring.
+    /// This is the synchronous form, for tests and for callers already on a
+    /// thread that may block. The UI calls [`Self::set_root_unread`] instead and
+    /// reads the listing on the background executor (risk R8).
+    #[allow(dead_code)]
     pub fn set_root(&mut self, root: PathBuf) -> std::io::Result<()> {
-        self.reset();
-        let (children, truncated) = read_dir_sorted(&root)?;
-        self.root = Some(root.clone());
-        self.loaded.insert(root.clone(), LoadedDir { children });
-        self.expanded.insert(root.clone());
-        if truncated {
-            self.truncated.insert(root);
+        self.set_root_unread(root.clone());
+        match read_dir_sorted(&root) {
+            Ok((children, truncated)) => {
+                self.loaded.insert(root.clone(), LoadedDir { children });
+                if truncated {
+                    self.truncated.insert(root);
+                }
+                Ok(())
+            }
+            // A root that cannot be read is not a root: leaving it published
+            // would put a folder in the tree that can never be expanded.
+            Err(error) => {
+                self.reset();
+                Err(error)
+            }
         }
-        Ok(())
+    }
+
+    /// Start a new workspace at `root` without reading it.
+    ///
+    /// The root is marked open and cached as empty, so the tree has a row for it
+    /// immediately and shows its children once the caller installs the listing
+    /// with [`Self::insert_children`]. Reading it here is what froze the window
+    /// on a slow folder at startup (risk R8).
+    pub fn set_root_unread(&mut self, root: PathBuf) {
+        self.reset();
+        self.root = Some(root.clone());
+        self.loaded.insert(root.clone(), LoadedDir::default());
+        self.expanded.insert(root);
     }
 
     /// Drop the root and every cached listing.
