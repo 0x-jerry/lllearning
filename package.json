@@ -2,9 +2,17 @@
   "name": "lllearning-assets",
   "private": true,
   "scripts": {
-    "build:icon": "bun assets/build-icon.ts"
+    "build:icon": "bun assets/build-icon.ts",
+    "typecheck": "bun check"
   },
   "devDependencies": {
-    "@resvg/resvg-js": "^2.6.2"
+    "@resvg/resvg-js": "^2.6.2",
+    "@types/bun": "latest",
+    "@types/node": "^26.6.11"
+  },
+  "module": "index.ts",
+  "type": "module",
+  "peerDependencies": {
+    "typescript": "^7"
   }
 }
