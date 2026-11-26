@@ -102,12 +102,19 @@ function Assert-Visible($name, $expected) {
     }
 }
 
-Assert-Visible "01-open" $true
-Save-Shot "01-open"
+Save-Shot "01-start"
 
 # The right strip's browser button, then the same button again to collapse.
 $stripX = $w - 18
 $browserY = 48
+
+# A restored session may leave the dock collapsed, and a collapsed dock never
+# renders the pane, so the first click only normalises the starting state.
+if (-not [Native]::IsWindowVisible($webview)) {
+    Click-At $stripX $browserY
+}
+Assert-Visible "01-open" $true
+
 Click-At $stripX $browserY
 Save-Shot "02-collapsed"
 $collapsed = [Native]::IsWindowVisible($webview)

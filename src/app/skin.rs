@@ -446,7 +446,6 @@ impl TabGroupRenderer for ShellTabs {
             );
         }
 
-        let trailing = self.render_trailing(cx);
         let _ = &self.shared;
 
         TabBar::new("shell-tabs")
@@ -463,7 +462,6 @@ impl TabGroupRenderer for ShellTabs {
                     .flex_grow_1()
                     .min_w(px(8.)),
             )
-            .when_some(trailing, |this, trailing| this.suffix(trailing))
             .into_any_element()
     }
 
@@ -517,56 +515,6 @@ impl TabGroupRenderer for ShellTabs {
             .min_h(px(0.))
             .child(panel.cached(gpui::StyleRefinement::default().absolute().size_full()))
             .into_any_element()
-    }
-}
-
-impl ShellTabs {
-    /// The trailing controls on the tab bar: the dock's collapse buttons.
-    ///
-    /// A tab bar cannot read the dock's open state, so this goes through the
-    /// area handle the skin keeps.
-    fn render_trailing(&self, cx: &mut App) -> Option<AnyElement> {
-        let area = self.shared.area().upgrade()?;
-        let area = area.read(cx);
-
-        let mut buttons: Vec<AnyElement> = Vec::new();
-        for placement in [DockPlacement::Left, DockPlacement::Right] {
-            if !area.has_dock(placement) || !area.is_dock_collapsible(placement) {
-                continue;
-            }
-            let open = area.is_dock_open(placement);
-            let icon = match (placement, open) {
-                (DockPlacement::Left, true) => IconName::PanelLeftClose,
-                (DockPlacement::Left, false) => IconName::PanelLeftOpen,
-                (_, true) => IconName::PanelRightClose,
-                (_, false) => IconName::PanelRightOpen,
-            };
-            let weak = self.shared.area().clone();
-            buttons.push(
-                Button::new(SharedString::from(format!(
-                    "shell-dock-toggle-{}",
-                    placement as usize
-                )))
-                .icon(icon)
-                .xsmall()
-                .ghost()
-                .tab_stop(false)
-                .on_click(move |_, window, cx| {
-                    let _ = weak.update(cx, |area, cx| {
-                        area.toggle_dock(placement, window, cx);
-                    });
-                })
-                .into_any_element(),
-            );
-        }
-
-        if buttons.is_empty() {
-            return None;
-        }
-        Some(
-            rsx! { <div class="flex items-center gap-1 px-1">{...buttons.into_iter()}</div> }
-                .into_any_element(),
-        )
     }
 }
 

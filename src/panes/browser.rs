@@ -176,8 +176,12 @@ impl BrowserView {
         // and reports it as a plain error. Keep the app running with a message in
         // the pane rather than panicking inside the build closure.
         let webview = match built {
-            Ok(view) => {
+            Ok(mut view) => {
                 let _ = view.raw().load_html(START_PAGE_HTML);
+                // Starts hidden: a pane restored into a collapsed dock is never
+                // told `set_active(false)`, so only a render that actually places
+                // the page may show it.
+                view.hide();
                 Some(cx.new(|_| view))
             }
             Err(error) => {
@@ -437,10 +441,10 @@ impl Render for BrowserView {
         let error = self.error.clone();
         let error_address = self.error_address.clone();
         let webview = self.webview.clone();
-        // Whatever this render decides to draw, the native child window has to
-        // agree with it: an error panel would otherwise have the page drawn on
-        // top of it. Called here rather than from every path that sets `error`
-        // so there is one place that can be wrong.
+        // The element below is the only thing that places the page, so this is
+        // the only place allowed to show it: whatever this render decides to
+        // draw, the native child window has to agree. Doing it here rather than
+        // from every path that sets `error` leaves one place that can be wrong.
         self.set_webview_visible(error.is_none(), cx);
 
         rsx! {
