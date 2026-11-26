@@ -383,7 +383,8 @@ impl TabGroupRenderer for ShellTabs {
                 tabs.push(
                     Tab::new()
                         .label(SharedString::from(panel.panel_name(cx)))
-                        .selected(ix == active),
+                        .selected(ix == active)
+                        .px(px(6.)),
                 );
                 continue;
             };
@@ -438,6 +439,7 @@ impl TabGroupRenderer for ShellTabs {
                 Tab::new()
                     .label(title)
                     .selected(ix == active)
+                    .px(px(6.))
                     .when(closable, |this| this.suffix(close_button))
                     .on_click(move |_, window, cx| {
                         group_for_select.select_tab(ix, window, cx);
