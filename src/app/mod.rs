@@ -5,8 +5,8 @@
 //! the shell" means in practice.
 
 pub mod activity_bar;
-pub mod dialog_window;
 pub mod documents_view;
+pub mod popup;
 pub mod shell;
 pub mod side_view;
 pub mod status_bar;
@@ -37,6 +37,6 @@ pub fn init(cx: &mut App) {
     // `ctrl-s` / `cmd-s`, scoped to a document viewer so no other input in the
     // window can claim it.
     documents::text::bind_keys(cx);
-    // Escape and Enter inside a prompt window.
-    dialog_window::init(cx);
+    // Escape and Enter inside a prompt, and Escape inside a context menu.
+    popup::dialog::init(cx);
 }

@@ -46,7 +46,9 @@ src/app/              the shell and its chrome
   documents_view.rs   DocumentsView: the document tabs and the document on show
   activity_bar.rs     the icon strip SideView draws
   title_bar.rs        TitleBar wrapper
-  dialog_window.rs    prompts as their own owned window, reporting an answer back
+  popup/mod.rs        the owned-window seam: placement, the answer channel, the registry
+  popup/dialog.rs     prompts: a question with footer buttons
+  popup/contextmenu.rs a list of commands at the pointer
   status_bar.rs       the footer
   mod.rs              init(): the one place a feature is switched on
 src/panes/            side-pane seam: explorer, browser, outline
@@ -179,19 +181,30 @@ native child window that does not leave the screen with its element (risk
 R1b), so the hook is what hides it. It is called only on a transition, never
 per frame, so it does not fight the pane's own `Render`.
 
-**A prompt is a window, not a dialog layer.** `window.open_dialog` draws into the
-main window's element tree, where the browser pane's WebView2 child window paints
-over it (risk R1). Use `app::dialog_window::open`, which opens a small window
-owned by the caller and reports the chosen action back through a channel. It
-must be called outside a draw — opening a window paints its first frame before
-it returns, so the shell defers it with `cx.defer_in` — and the returned `Task`
-must be kept, or the prompt has nowhere to send its answer.
+**A popup is a window, not a dialog layer or a popover.** `window.open_dialog`
+draws into the main window's element tree, where the browser pane's WebView2
+child window paints over it (risk R1). So does an anchored popover. Anything that
+has to be seen over the page goes through `app::popup`: `popup::dialog::open`
+for a question, `popup::contextmenu::open` for a menu at the pointer. Both open a
+small window owned by the caller and report the choice back through a channel.
 
-**A prompt window is owned on the platform, but nothing makes it follow its
-owner off the screen.** The tray's Hide and the close-to-tray guard take the
-owner away without closing it, so both call `dialog_window::close_for` first.
-A modal prompt also re-shows itself when it becomes visible again: its owner is
-disabled while it is up, so a prompt left minimized behind it would lock the app.
+The two callbacks are the whole seam: `Popup::options` describes the window, and
+`Popup::opened` runs once the window exists — where a view gets its focus handle
+and its subscriptions, because neither can be built before there is a window.
+`Host<T>` owns the answer channel and the owner's input, so a new popup kind
+gets both by holding one.
+
+It must be called outside a draw — opening a window paints its first frame before
+it returns, so the shell defers it with `cx.defer_in` — and the returned `Task`
+must be kept, or the popup has nowhere to send its answer.
+
+**A popup window is owned on the platform, but nothing makes it follow its owner
+off the screen.** The tray's Hide and the close-to-tray guard take the owner away
+without closing it, so both call `popup::close_for` first. A modal prompt also
+re-shows itself when it becomes visible again: its owner is disabled while it is
+up, so a prompt left minimized behind it would lock the app. A context menu
+instead takes no input from the owner, so the owner stays clickable and a click
+there is what dismisses it.
 
 **Side panes are built once and cached in `SideView`.** Rebuilding on every
 switch would recreate the WebView2 — slow, and it re-arms the profile lock (risk
@@ -259,7 +272,7 @@ into a dangling lookup.
 | R14 | Lucide font glyphs: baseline/centring, and a 1 MB TTF in the binary. | Render icons in a fixed-size flex box; fall back to `gpui_kit::assets::IconName` for a single icon if its metrics look off. |
 | R15 | Tree-sitter grammar features inflate build time and binary size. | Keep the grammar list in `Cargo.toml` minimal; the text viewer must still work when a grammar is missing. |
 | R16 | *(resolved)* The dock held `Arc<dyn PanelView>`; a tab's title and close button only reached the skin through `panel_handle`. | Resolved by removing the dock: panes are plain entities and the shell draws the tabs itself. |
-| R17 | **An in-window dialog is covered by the webview.** `window.open_dialog` draws into the main window's element tree, under the browser pane's native child window — the same cause as R1, which is why R1 alone did not cover it. | Prompts are their own window (`app/dialog_window.rs`), owned by the caller and reporting its answer back. R1 still governs dropdowns and toasts, which have no window of their own. |
+| R17 | **An in-window dialog or popover is covered by the webview.** `window.open_dialog` and an anchored popover draw into the main window's element tree, under the browser pane's native child window — the same cause as R1, which is why R1 alone did not cover it. | Dialogs and context menus are their own window (`app/popup/`), owned by the caller and reporting their answer back. Toasts and the tab bar's own `menu` still draw in-window, so R1 still governs them. |
 
 ## Verifying UI changes
 

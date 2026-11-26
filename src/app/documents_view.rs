@@ -16,8 +16,9 @@ use gpui::component::{
     tab::{Tab, TabBar},
 };
 use gpui::{
-    AnyElement, App, Entity, InteractiveElement as _, IntoElement, ParentElement as _,
-    ScrollHandle, SharedString, Styled as _, Window, div, px,
+    AnyElement, App, ClickEvent, Entity, InteractiveElement as _, IntoElement, ParentElement as _,
+    Pixels, Point, ScrollHandle, SharedString, StatefulInteractiveElement as _, Styled as _,
+    Window, div, px,
 };
 use gpui_rsx::rsx;
 
@@ -108,13 +109,15 @@ impl DocumentsView {
 
     /// The centre, framed with its tab strip.
     ///
-    /// `on_select` and `on_close` are the shell's: selecting focuses the editor
-    /// and reveals the file in the tree, and closing may have to prompt for
-    /// unsaved work, so neither belongs to a view that knows no shell.
+    /// `on_select`, `on_close` and `on_menu` are the shell's: selecting focuses
+    /// the editor and reveals the file in the tree, closing may have to prompt
+    /// for unsaved work, and the menu's commands act on every tab — none of that
+    /// belongs to a view that knows no shell.
     pub fn render(
         &self,
         on_select: impl Fn(&usize, &mut Window, &mut App) + 'static,
         on_close: impl Fn(&usize, &mut Window, &mut App) + 'static,
+        on_menu: impl Fn(&(usize, Point<Pixels>), &mut Window, &mut App) + 'static,
         cx: &App,
     ) -> AnyElement {
         let active = self.active.unwrap_or(0);
@@ -123,8 +126,8 @@ impl DocumentsView {
             None => empty_state("No file open", "Pick a file in the explorer to start.", cx),
         };
 
-        let strip =
-            (!self.documents.is_empty()).then(|| self.tab_strip(active, on_select, on_close, cx));
+        let strip = (!self.documents.is_empty())
+            .then(|| self.tab_strip(active, on_select, on_close, on_menu, cx));
 
         frame("pane-documents", strip, body, cx)
     }
@@ -134,6 +137,7 @@ impl DocumentsView {
         active: usize,
         on_select: impl Fn(&usize, &mut Window, &mut App) + 'static,
         on_close: impl Fn(&usize, &mut Window, &mut App) + 'static,
+        on_menu: impl Fn(&(usize, Point<Pixels>), &mut Window, &mut App) + 'static,
         cx: &App,
     ) -> AnyElement {
         if self.shown.get() != Some(active) {
@@ -143,6 +147,7 @@ impl DocumentsView {
 
         let on_select = std::rc::Rc::new(on_select);
         let on_close = std::rc::Rc::new(on_close);
+        let on_menu = std::rc::Rc::new(on_menu);
         let close_variant = close_button_variant(cx);
 
         let tabs: Vec<Tab> = self
@@ -153,6 +158,7 @@ impl DocumentsView {
                 let group = SharedString::from(format!("document-tab-{ix}"));
                 let select = on_select.clone();
                 let close = on_close.clone();
+                let menu = on_menu.clone();
                 let title = document.read(cx).tab_title(cx);
                 let close_id = SharedString::from(format!("document-close-{ix}"));
 
@@ -175,6 +181,21 @@ impl DocumentsView {
                     </div>
                 };
 
+                // The tab's own child carries the right-click: `Tab` has no
+                // secondary activation of its own, and the click's position is
+                // the only place the menu can be anchored to. As a child rather
+                // than a wrapper it stays inside the tab's hitbox, so the
+                // selected and hover styling still covers it.
+                let menu_target = rsx! {
+                    <div
+                        id={SharedString::from(format!("document-tab-menu-{ix}"))}
+                        on_aux_click={move |event: &ClickEvent, window, cx| {
+                            cx.stop_propagation();
+                            menu(&(ix, event.position()), window, cx);
+                        }}
+                    />
+                };
+
                 rsx! {
                     <Tab
                         base={Tab::new()}
@@ -185,7 +206,9 @@ impl DocumentsView {
                         pr={px(1.)}
                         suffix={close_button}
                         on_click={move |_, window, cx| select(&ix, window, cx)}
-                    />
+                    >
+                        {menu_target}
+                    </Tab>
                 }
             })
             .collect();

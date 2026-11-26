@@ -19,8 +19,9 @@ The file decides the viewer; there is no mode to pick.
 
 The tree is read lazily and watched, so changes made outside the app land within
 about half a second. Closing a dirty tab asks Save / Discard / Cancel in its own
-small window — it has to be a window, because the browser pane's page is native
-and paints over anything drawn inside the main one. A file
+small window, and a tab's right-click menu is one too — they have to be windows,
+because the browser pane's page is native and paints over anything drawn inside
+the main one. A file
 changed on disk is flagged rather than written over your buffer. The folder,
 tabs and pane widths survive a restart. Closing the window hides it to the tray;
 Quit is in the tray menu.
@@ -39,7 +40,9 @@ nothing extra. For an installer, `cargo packager --release` writes
 | Keys | Action |
 | --- | --- |
 | `Ctrl+S` / `Cmd+S` | Save the active document |
-| `Enter` | Load the address in the browser bar |
+| `Enter` | Load the address in the browser bar, or the prompt's default button |
+| Right-click a tab | Close, Close All, Close Others |
+| `Escape` | Dismiss a prompt or a context menu |
 
 ## Develop
 

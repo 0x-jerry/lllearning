@@ -31,15 +31,18 @@ use gpui::component::{
 };
 use gpui::{
     AnyElement, App, AppContext as _, Context, Entity, EventEmitter, FocusHandle, Focusable,
-    InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString, Styled as _,
-    Subscription, Window, div, px,
+    InteractiveElement as _, IntoElement, ParentElement as _, Pixels, Point, Render, SharedString,
+    Styled as _, Subscription, Window, div, px,
 };
 use gpui_rsx::rsx;
 
 use crate::{
     app::{
-        dialog_window::{self, DialogAction, DialogOptions},
         documents_view::DocumentsView,
+        popup::{
+            contextmenu::{self, MenuItem, MenuOptions},
+            dialog::{self, DialogAction, DialogOptions},
+        },
         side_view::SideView,
         status_bar, title_bar,
     },
@@ -103,6 +106,14 @@ enum SaveAnswer {
     Cancel,
     Discard,
     Save,
+}
+
+/// What the tab menu was answered with.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TabCommand {
+    Close,
+    CloseAll,
+    CloseOthers,
 }
 
 impl Focusable for AppShell {
@@ -504,7 +515,7 @@ impl AppShell {
             },
         ];
 
-        let answered = dialog_window::open(window, cx, options, actions);
+        let answered = dialog::open(window, cx, options, actions);
         // The prompt acts on the owner window — the tree reveal and the editor
         // focus both need it — so the answer comes back through its handle.
         let owner = window.window_handle();
@@ -542,7 +553,7 @@ impl AppShell {
                 match saved {
                     Ok(()) => self.remove_document(document, window, cx),
                     Err(error) => {
-                        dialog_window::alert(window, cx, "Could not save", error);
+                        dialog::alert(window, cx, "Could not save", error);
                     }
                 }
             }
@@ -572,6 +583,101 @@ impl AppShell {
         cx.emit(ActiveDocumentChanged);
         self.schedule_session_save(window, cx);
         cx.notify();
+    }
+
+    /// Show the tab menu at the pointer, for the tab at `ix`.
+    ///
+    /// Deferred for the same reason a prompt is: a popup window paints its first
+    /// frame before it opens, and this runs inside a click during a draw.
+    fn show_tab_menu(
+        &mut self,
+        at: (usize, Point<Pixels>),
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        cx.defer_in(window, move |this, window, cx| {
+            this.open_tab_menu(at, window, cx)
+        });
+    }
+
+    fn open_tab_menu(
+        &mut self,
+        (ix, position): (usize, Point<Pixels>),
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let count = self.documents().len();
+        if ix >= count {
+            return;
+        }
+        let items = vec![
+            MenuItem::new("tab-close", "Close", TabCommand::Close),
+            MenuItem::new("tab-close-all", "Close All", TabCommand::CloseAll).separated(),
+            // "Others" is the one command that needs a second tab to exist.
+            MenuItem::new("tab-close-others", "Close Others", TabCommand::CloseOthers)
+                .disabled(count < 2),
+        ];
+
+        let answered = contextmenu::open(window, cx, MenuOptions::at(position), items);
+        let owner = window.window_handle();
+        let shell = cx.weak_entity();
+        cx.spawn_in(window, async move |_, cx| {
+            let Some(command) = answered.await else {
+                return;
+            };
+            let _ = owner.update(cx, |_, window, cx| {
+                let _ = shell.update(cx, |shell, cx| {
+                    shell.apply_tab_command(command, ix, window, cx)
+                });
+            });
+        })
+        .detach();
+    }
+
+    /// Do what the tab menu asked for.
+    fn apply_tab_command(
+        &mut self,
+        command: TabCommand,
+        ix: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.close_documents(command, ix, window, cx)
+    }
+
+    /// Close what `command` names, given the tab the menu was opened on.
+    ///
+    /// A dirty document still prompts, one after another, rather than being
+    /// discarded: the menu says "close", not "discard".
+    fn close_documents(
+        &mut self,
+        command: TabCommand,
+        ix: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let count = self.documents().len();
+        let closing: Vec<Entity<DocumentPanel>> = Self::tabs_to_close(count, command, ix)
+            .into_iter()
+            .filter_map(|open| self.documents().get(open).cloned())
+            .collect();
+        for document in closing {
+            self.close_document(document, window, cx);
+        }
+    }
+
+    /// Which tabs a menu command closes, out of `count` open ones.
+    ///
+    /// Its own function so the answer can be tested without a window: closing is
+    /// what prompts for unsaved work, so getting the set wrong is how a menu
+    /// loses someone's buffer.
+    fn tabs_to_close(count: usize, command: TabCommand, ix: usize) -> Vec<usize> {
+        let all = 0..count;
+        match command {
+            TabCommand::Close => vec![ix],
+            TabCommand::CloseAll => all.collect(),
+            TabCommand::CloseOthers => all.filter(|open| *open != ix).collect(),
+        }
     }
 
     /// Close every document, discarding changes.
@@ -798,6 +904,11 @@ impl Render for AppShell {
                     this.close_document(document, window, cx);
                 }
             }),
+            cx.listener(
+                |this: &mut AppShell, at: &(usize, Point<Pixels>), window, cx| {
+                    this.show_tab_menu(*at, window, cx)
+                },
+            ),
             cx,
         );
 
@@ -872,4 +983,44 @@ pub fn any_dirty(shell: &AppShell, cx: &App) -> bool {
         .documents()
         .iter()
         .any(|document| document.read(cx).is_dirty(cx))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn closing_a_tab_menu_choice_closes_only_that_tab() {
+        assert_eq!(AppShell::tabs_to_close(3, TabCommand::Close, 1), vec![1]);
+    }
+
+    #[test]
+    fn close_all_takes_every_tab() {
+        assert_eq!(
+            AppShell::tabs_to_close(3, TabCommand::CloseAll, 1),
+            vec![0, 1, 2]
+        );
+    }
+
+    #[test]
+    fn close_others_keeps_the_tab_the_menu_was_opened_on() {
+        assert_eq!(
+            AppShell::tabs_to_close(3, TabCommand::CloseOthers, 1),
+            vec![0, 2]
+        );
+        // The first and the last are the edges the filter has to get right.
+        assert_eq!(
+            AppShell::tabs_to_close(3, TabCommand::CloseOthers, 0),
+            vec![1, 2]
+        );
+        assert_eq!(
+            AppShell::tabs_to_close(3, TabCommand::CloseOthers, 2),
+            vec![0, 1]
+        );
+    }
+
+    #[test]
+    fn close_others_with_one_tab_closes_nothing() {
+        assert!(AppShell::tabs_to_close(1, TabCommand::CloseOthers, 0).is_empty());
+    }
 }

@@ -165,7 +165,7 @@ pub(crate) fn hide_first(cx: &mut AsyncApp) {
         return;
     };
     let _ = handle.update(cx, |_, window, cx| {
-        crate::app::dialog_window::close_for(window.window_handle().window_id(), cx);
+        crate::app::popup::close_for(window.window_handle().window_id(), cx);
         hide(window);
     });
 }
