@@ -368,4 +368,68 @@ mod tests {
     fn the_root_label_is_the_folder_name() {
         assert_eq!(root_label(Path::new("/a/b/lllearning")), "lllearning");
     }
+
+    /// Build an empty throwaway folder.
+    ///
+    /// `tag` must differ between calls in one test: the thread id is the same,
+    /// so the tag is what keeps two folders from sharing a path.
+    fn temp_workspace(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "lllearning-ws-{tag}-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("create the folder");
+        dir
+    }
+
+    /// Changing the folder replaces the tree and drops the old one.
+    ///
+    /// The plan's step 9 asks for exactly this, and it is the half of the flow
+    /// that does not need a platform folder picker: `set_root` is what the
+    /// picker's reply calls.
+    #[test]
+    fn changing_the_root_replaces_the_tree() {
+        let first = temp_workspace("first");
+        let second = temp_workspace("second");
+        std::fs::write(first.join("only-in-first.txt"), b"x").expect("write the first marker");
+        std::fs::write(second.join("only-in-second.txt"), b"y").expect("write the second marker");
+
+        let mut tree = crate::workspace::tree::DirTree::new();
+        tree.set_root(first.clone()).expect("first root");
+        assert_eq!(tree.root(), Some(first.as_path()));
+        let first_names: Vec<String> = tree.items()[0]
+            .children
+            .iter()
+            .map(|item| item.label.to_string())
+            .collect();
+        assert_eq!(first_names, vec!["only-in-first.txt"]);
+
+        tree.set_root(second.clone()).expect("second root");
+        assert_eq!(tree.root(), Some(second.as_path()));
+
+        let names: Vec<String> = tree.items()[0]
+            .children
+            .iter()
+            .map(|item| item.label.to_string())
+            .collect();
+        assert_eq!(
+            names,
+            vec!["only-in-second.txt"],
+            "the new folder's listing replaces the old one entirely"
+        );
+
+        std::fs::remove_dir_all(&first).ok();
+        std::fs::remove_dir_all(&second).ok();
+    }
+
+    /// A root that no longer exists is reported, not silently accepted.
+    #[test]
+    fn a_missing_root_is_refused() {
+        let mut tree = crate::workspace::tree::DirTree::new();
+        let missing = std::env::temp_dir().join("lllearning-not-a-folder-xyz");
+        assert!(tree.set_root(missing).is_err());
+        assert_eq!(tree.root(), None, "a failed root leaves nothing behind");
+    }
 }
