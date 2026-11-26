@@ -450,7 +450,8 @@ impl Render for BrowserView {
         rsx! {
             <div class="flex flex-col size-full">
                 <div
-                    class="flex flex-row items-center gap-1 px-2 py-1"
+                    class="flex flex-row items-center gap-1 px-2"
+                    h={px(30.)}
                     border_b_1
                     border_color={border}
                 >
@@ -494,7 +495,7 @@ impl Render for BrowserView {
                         }
                     }}
                     <div class="flex-1 min-w-0">
-                        {Input::new(&self.address)}
+                        {Input::new(&self.address).small()}
                     </div>
                 </div>
                 <div class="flex-1 min-h-0 overflow-hidden">
