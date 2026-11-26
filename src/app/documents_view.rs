@@ -181,21 +181,10 @@ impl DocumentsView {
                     </div>
                 };
 
-                // The tab's own child carries the right-click: `Tab` has no
-                // secondary activation of its own, and the click's position is
-                // the only place the menu can be anchored to. As a child rather
-                // than a wrapper it stays inside the tab's hitbox, so the
-                // selected and hover styling still covers it.
-                let menu_target = rsx! {
-                    <div
-                        id={SharedString::from(format!("document-tab-menu-{ix}"))}
-                        on_aux_click={move |event: &ClickEvent, window, cx| {
-                            cx.stop_propagation();
-                            menu(&(ix, event.position()), window, cx);
-                        }}
-                    />
-                };
-
+                // The right-click goes on the tab itself, not on a child or a
+                // wrapper: `TabBar` keys its children by position, so a wrapper
+                // would stop it indexing them, and a child never sees the
+                // pointer — the tab's own handler sits outside its children.
                 rsx! {
                     <Tab
                         base={Tab::new()}
@@ -206,9 +195,10 @@ impl DocumentsView {
                         pr={px(1.)}
                         suffix={close_button}
                         on_click={move |_, window, cx| select(&ix, window, cx)}
-                    >
-                        {menu_target}
-                    </Tab>
+                        on_aux_click={move |event: &ClickEvent, window, cx| {
+                            menu(&(ix, event.position()), window, cx);
+                        }}
+                    />
                 }
             })
             .collect();
