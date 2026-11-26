@@ -8,6 +8,7 @@ use gpui::*;
 use gpui_rsx::rsx;
 use gpui_webview::WebView;
 
+mod icons;
 mod tray;
 mod window;
 
@@ -325,6 +326,8 @@ impl Render for WebViewDemo {
         rsx! {
             <div class="flex flex-col gap-[12px] p-[8px] size-full">
                 <div class="flex flex-row gap-[8px] items-center">
+                    {icons::icon_sm(lucide_icons::Icon::Folder)}
+                    {icons::icon_sm(lucide_icons::Icon::FileText)}
                     <Button("back") ghost icon={IconName::ChevronLeft}
                         onClick={cx.listener(Self::go_back)} />
                     <Button("forward") ghost icon={IconName::ChevronRight}
@@ -396,6 +399,7 @@ fn main() {
         .with_quit_mode(tray::quit_mode())
         .run(|cx| {
             gpui::init(cx);
+            icons::install_font(cx);
 
             if let Err(error) = tray::Tray::install(cx) {
                 eprintln!("failed to create the tray icon: {error}");

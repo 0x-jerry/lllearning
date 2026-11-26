@@ -9,13 +9,33 @@ inspector = []
 
 [dependencies]
 # Aliased so `gpui::` paths match what `rsx!` expansions generate.
-gpui = { package = "gpui-kit", version = "0.11.0", features = ["gpui-fast"] }
+gpui = { package = "gpui-kit", version = "0.11.0", features = [
+    "gpui-fast",
+    # Syntax highlighting in the editor pane. `tree-sitter` on its own brings
+    # JSON; the rest are the grammars the file-type table in `documents::sniff`
+    # names. Dropping one here only costs highlighting for that language.
+    "tree-sitter",
+    "tree-sitter-bash",
+    "tree-sitter-javascript",
+    "tree-sitter-markdown",
+    "tree-sitter-python",
+    "tree-sitter-rust",
+    "tree-sitter-toml",
+    "tree-sitter-typescript",
+    "tree-sitter-yaml",
+] }
 gpui-rsx = "0.13.0"
 gpui-webview = { version = "0.11.0", features = ["gpui-fast"] }
 wry = { version = "0.53.3", package = "lb-wry" }
 png = "0.18"
 tray-icon = "0.26"
 raw-window-handle = "0.6.2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+notify = "8"
+dirs = "6"
+lucide-icons = "1.80"
+ignore = "0.4"
 
 [target.'cfg(target_os = "windows")'.dependencies]
 windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging"] }
