@@ -64,9 +64,10 @@ activity strips around an `h_resizable` group of three panels (left dock,
 document tabs, right dock); there is no dock crate involved.
 
 Editing `assets/icon.svg` means regenerating the rasters with `bun install` then
-`bun run build:icon`. The explorer's file-type icons come from
-[`devicons`](https://github.com/alexpasmantier/rust-devicons), which needs the
-nerd font vendored in `assets/` — it is embedded the same way `lucide.ttf` is.
+`bun run build:icon`. The two icon fonts need no such step: `build/` subsets
+lucide and the nerd font down to the glyphs the app actually draws, at build
+time, so the binary does not carry a 1 MB font to paint thirteen icons. See
+`build/main.rs` for which glyphs it keeps and how it finds them.
 
 `AGENTS.md` carries the rest: the traps, the risk register, the session file and
 the `scripts/` UI drivers. Read it before changing code.

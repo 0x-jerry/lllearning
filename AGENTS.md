@@ -19,7 +19,7 @@ lookup, not a typo.
 ```bash
 cargo check --all-targets          # fast feedback
 cargo build                        # the binary the driver scripts use
-cargo test                         # 71 tests, ~0.3s
+cargo test                         # 80 tests, ~0.3s
 cargo fmt --check
 cargo clippy --all-targets --all-features -- -D warnings
 ```
@@ -27,6 +27,11 @@ cargo clippy --all-targets --all-features -- -D warnings
 All of these must pass. `cargo test`, `fmt` and `clippy` are the definition of
 done, and `-D warnings` means a warning is a failure — do not leave one for
 later.
+
+`cargo build --release` is the exception: `[profile.release]` sets fat LTO and
+one codegen unit, so a full rebuild is ~9 minutes rather than ~30 s. That is the
+trade for a 42 MB binary becoming ~28 MB, and it runs once per version. Do not
+reach for it while iterating.
 
 **The binary must not be running when you build.** On Windows a running
 `lllearning.exe` holds the file and `cargo build` fails with
@@ -58,6 +63,11 @@ src/state.rs          the session file
 src/icons.rs          icon glyphs as text: lucide, and the nerd font for file types
 src/tray.rs           tray icon; hide-on-close
 src/window.rs         Win32 hide/show, and owning a prompt window to its caller
+build/                the build script: subsets the icon fonts, one file per font
+  main.rs             what it does and when; the two font calls
+  font.rs             crate lookup, subsetting, staleness
+  lucide.rs           which lucide glyphs the app draws, scanned out of src/
+  devicons.rs         which nerd-font glyphs the file-type table can return
 ```
 
 There is no dock crate in use. The window is two `SideView`s around a
@@ -315,7 +325,7 @@ into a dangling lookup.
 | R11 | Losing unsaved work on quit or on a folder switch. | **Open.** A dirty tab's own close button prompts, but `close_all_documents` (folder switch) and the quit hook discard silently — the hook only counts the dirty files on stderr, because no window is left to ask in. Closing either gap means one prompt that walks the dirty documents before the discard. |
 | R12 | A persisted layout from a future or older build, or a pane id that no longer exists. | `SessionState.version` gate (now 2; a version 1 file was the dock's layout and is ignored); an unknown pane id falls back to the slot's first provider; a document that cannot be reopened survives as an `Unavailable` tab; any load error falls back to the default layout. |
 | R13 | Custom title bar drag/close on Windows interacts with the tray "hide on close" guard. | Reuse `tray::keep_window_on_close`; verify the window buttons and that the tray still shows and hides the window. |
-| R14 | Lucide font glyphs: baseline/centring, and a 1 MB TTF in the binary. | Render icons in a fixed-size flex box; fall back to `gpui_kit::assets::IconName` for a single icon if its metrics look off. |
+| R14 | Lucide font glyphs: baseline/centring, and a 1 MB TTF in the binary. | Render icons in a fixed-size flex box; fall back to `gpui_kit::assets::IconName` for a single icon if its metrics look off. The 1 MB cost is gone: `build/` subsets both icon fonts to the glyphs the source names. |
 | R15 | Tree-sitter grammar features inflate build time and binary size. | Keep the grammar list in `Cargo.toml` minimal; the text viewer must still work when a grammar is missing. |
 | R16 | *(resolved)* The dock held `Arc<dyn PanelView>`; a tab's title and close button only reached the skin through `panel_handle`. | Resolved by removing the dock: panes are plain entities and the shell draws the tabs itself. |
 | R18 | **A popup window shows a taskbar button, and hiding it to remove the button deactivates it.** A window created as `Normal` is born with `WS_EX_APPWINDOW` and is already shown when the build closure runs; clearing the style on a visible window leaves the button, and the hide/show that does clear it is a deactivation, which a menu watching activation reads as a click outside. | The menu is created as `WindowKind::PopUp` (a tool window from birth, no round trip); the prompt needs the round trip and has no activation observer. See the two traps above. |

@@ -17,17 +17,27 @@ use std::borrow::Cow;
 use gpui::component::ActiveTheme as _;
 use gpui::{App, Div, Hsla, ParentElement as _, SharedString, Styled as _, div, px, rgb};
 use gpui_rsx::rsx;
-use lucide_icons::{Icon, LUCIDE_FONT_BYTES};
+use lucide_icons::Icon;
 
 /// The family name from the bundled lucide font's `name` table.
 pub const LUCIDE_FAMILY: &str = "lucide";
 
-/// The nerd font that draws file-type glyphs, vendored in `assets/`.
+/// The lucide font, subset to the glyphs this app draws.
 ///
-/// It is 1.9 MB and bundled for the same reason lucide is: an icon that depends
-/// on a font the user happens to have installed is an icon that renders as tofu
-/// on the machine you ship to.
-const DEVICONS_FONT_BYTES: &[u8] = include_bytes!("../assets/SymbolsNerdFontMono-Regular.ttf");
+/// `build/lucide.rs` cuts it from the crate's full TTF (1 MB, ~1 900 glyphs) to
+/// the icons the source names, which is what keeps the binary from carrying a
+/// font that is 99% unreachable glyphs.
+const LUCIDE_FONT_BYTES: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/lucide-subset.ttf"));
+
+/// The nerd font that draws file-type glyphs, subset the same way.
+///
+/// Vendored in `assets/` for the same reason lucide is: an icon that depends on
+/// a font the user happens to have installed is an icon that renders as tofu on
+/// the machine you ship to. `SymbolsNerdFontMono-Regular.ttf` beside it is the
+/// full 2.3 MB source `build/devicons.rs` cuts from, not something the binary
+/// embeds.
+const DEVICONS_FONT_BYTES: &[u8] =
+    include_bytes!(concat!(env!("OUT_DIR"), "/SymbolsNerdFontMono-subset.ttf"));
 
 /// The family name from that font's `name` table.
 pub const DEVICONS_FAMILY: &str = "Symbols Nerd Font Mono";
@@ -153,6 +163,45 @@ mod tests {
             assert_eq!(text.chars().count(), 1, "{glyph:?} is not one glyph");
         }
     }
+
+    #[test]
+    fn the_lucide_font_covers_every_icon_this_build_draws() {
+        // The bundled font is a *subset*, so it only has the glyphs
+        // `build/lucide.rs` found when the font was generated. A new `Icon` in
+        // the UI is picked up by the next build, but nothing else can see a
+        // disagreement between the enum and the font, because both are opaque
+        // data — so this is the check that turns a tofu box into a failure.
+        let coverage = Coverage::of(LUCIDE_FONT_BYTES);
+        let missing: Vec<char> = DRAWN_ICONS
+            .iter()
+            .map(|glyph| char::from(*glyph))
+            .filter(|glyph| !coverage.has(*glyph))
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "the lucide subset has no glyph for {missing:?}; rebuild to regenerate it"
+        );
+    }
+
+    /// Every lucide icon the app draws, which is what the generated subset has
+    /// to cover. Spelled out here so the contract is visible in one place;
+    /// `build/lucide.rs` derives the same set from the `Icon::` uses under
+    /// `src/`, and this test is what notices the two disagreeing.
+    const DRAWN_ICONS: [Icon; 13] = [
+        Icon::ArrowLeft,
+        Icon::ArrowRight,
+        Icon::Book,
+        Icon::File,
+        Icon::Files,
+        Icon::Folder,
+        Icon::FolderOpen,
+        Icon::Globe,
+        Icon::ListTree,
+        Icon::RefreshCw,
+        Icon::RotateCw,
+        Icon::TriangleAlert,
+        Icon::X,
+    ];
 
     #[test]
     fn the_family_names_match_the_bundled_fonts() {
