@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
+  <title>lllearning</title>
+  <defs>
+    <mask id="bars" maskUnits="userSpaceOnUse" x="0" y="0" width="256" height="256">
+      <rect width="256" height="256" fill="#fff"/>
+      <rect x="68" y="72" width="24" height="112" rx="12" ry="12" fill="#000"/>
+      <rect x="116" y="72" width="24" height="112" rx="12" ry="12" fill="#000"/>
+      <rect x="164" y="72" width="24" height="112" rx="12" ry="12" fill="#000"/>
+    </mask>
+  </defs>
+  <rect width="256" height="256" rx="56" ry="56" fill="#2D69DC" mask="url(#bars)"/>
+</svg>

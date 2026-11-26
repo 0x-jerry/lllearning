@@ -35,5 +35,19 @@ cargo packager --release
 ```
 
 Config lives in `[package.metadata.packager]`; icons are `assets/icon.png` and
-`assets/icon.ico`. On Windows this produces `target/release/lllearning_0.1.0_x64-setup.exe`
+`assets/icon.ico`.
+
+## Icon
+
+`assets/icon.svg` is the source (blue rounded square with three knocked-out vertical
+bars). Regenerate the raster icons after editing it:
+
+```bash
+bun install
+bun run build:icon
+```
+
+`assets/build-icon.ts` renders the SVG with `@resvg/resvg-js`, downscales and encodes
+with `Bun.Image`, and writes `icon.png` (256×256) plus a multi-size `icon.ico`
+(16–256 px). On Windows this produces `target/release/lllearning_0.1.0_x64-setup.exe`
 (needs NSIS on `PATH` — cargo-packager downloads it on first run).
