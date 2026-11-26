@@ -1,8 +1,8 @@
 //! Application layer: the shell, its chrome, and the built-in registrations.
 //!
 //! [`init`] is the single place a feature is switched on. Adding a pane or a
-//! document viewer is a line here, which is what the plan's "extensible without
-//! touching the shell" requirement means in practice.
+//! document viewer is a line here, which is what "extensible without touching
+//! the shell" means in practice.
 
 pub mod activity_bar;
 pub mod shell;

@@ -386,9 +386,8 @@ mod tests {
 
     /// Changing the folder replaces the tree and drops the old one.
     ///
-    /// The plan's step 9 asks for exactly this, and it is the half of the flow
-    /// that does not need a platform folder picker: `set_root` is what the
-    /// picker's reply calls.
+    /// The folder switch is the half of the flow that does not need a platform
+    /// folder picker: `set_root` is what the picker's reply calls.
     #[test]
     fn changing_the_root_replaces_the_tree() {
         let first = temp_workspace("first");

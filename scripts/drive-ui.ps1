@@ -1,5 +1,5 @@
 # Drives the running app: clicks a folder, opens a file, types, saves.
-# Kept as a script because the same sequence is the manual pass in docs/plan.md §8.
+# Kept as a script because the same sequence is the manual pass in AGENTS.md.
 param(
     [string]$OutDir = "$env:TEMP\ll-shots",
     [string]$Workspace = "E:\Codes\lllearning"

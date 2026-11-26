@@ -8,8 +8,11 @@ touching the code; it records what is expensive to rediscover.
 A three-column desktop workspace app in Rust on GPUI Kit: file tree on the left,
 document tabs in the middle, a real webview browser on the right.
 
-`docs/plan.md` is the design document the app was built from. It is accurate and
-worth reading for the *why*; this file covers the *how* and the traps.
+The design document the app was built from has been removed; `README.md` now
+carries the product overview and this file carries the internals. The old
+document's risk register survived here (§ [Risk register](#risk-register))
+because source comments cite those numbers — a bare `risk R11` in a comment is a
+lookup, not a typo.
 
 ## Commands
 
@@ -21,8 +24,9 @@ cargo fmt --check
 cargo clippy --all-targets --all-features -- -D warnings
 ```
 
-All four must pass. `cargo test` and `clippy` are the definition of done, and
-`-D warnings` means a warning is a failure — do not leave one for later.
+All of these must pass. `cargo test`, `fmt` and `clippy` are the definition of
+done, and `-D warnings` means a warning is a failure — do not leave one for
+later.
 
 **The binary must not be running when you build.** On Windows a running
 `lllearning.exe` holds the file and `cargo build` fails with
@@ -168,6 +172,32 @@ binding will not reach it. The action is `documents::text::SaveDocument`.
   named a path or provider this build cannot rebuild. It keeps the tab rather
   than dropping it.
 
+## Risk register
+
+The numbers are cited by source comments (`risk R8`), so this table is
+append-only: add a row, never renumber. A row that no longer applies is marked
+resolved rather than deleted, because deleting it turns every citation of it
+into a dangling lookup.
+
+| # | Risk | Mitigation |
+| --- | --- | --- |
+| R1 | **WebView2 covers GPUI overlays** and cannot be clipped to a partial region on Windows. A dialog or dropdown opened over the right dock hides behind the page. | Modal dialogs render at the window root; the browser pane never anchors a dropdown. Documented as a known limitation in `README.md`. |
+| R2 | WebView2 profile lock: a second instance fails to start the webview. | The browser pane shows a "could not start" panel instead of panicking. |
+| R3 | `TreeItem::is_folder()` is `!children.is_empty()`, so an empty directory is not a folder and cannot be expanded. | Give an empty or unreadable directory a disabled placeholder child; skip it when rendering and when resolving clicks (`workspace/tree.rs`). |
+| R4 | **No native video element in GPUI.** | The `video` provider is a placeholder that explains why and offers the browser pane. The seam is unaffected — a real viewer is one provider. |
+| R5 | `TreeState::set_items` clears the selection, so every lazy expand would lose the highlight. | Re-apply `set_selected_item` after each rebuild; keep expansion state in `DirTree`, not only in `TreeItem`. |
+| R6 | The base tree toggles expand on **any** click, including a file click; `on_click` inside the item runs first but selection changes after. | File rows call `cx.stop_propagation()` on the label and open the document there; dirs keep the default behaviour. |
+| R7 | `notify` emits duplicates and rename pairs on Windows; watching a large tree is expensive. | 250 ms debounce plus path dedupe, and per-directory refresh only for *loaded* dirs. |
+| R8 | Blocking `read_dir`/file reads on the UI thread freeze the app on network drives. | All fs work goes through `cx.background_spawn`; listings are capped at `MAX_DIR_ENTRIES` (5 000). |
+| R9 | Path identity on Windows: drive-letter case, `\\?\` prefixes from `canonicalize`, symlinks. | Normalise once in `fs_util.rs`; compare case-insensitively on Windows. Unit-tested there. |
+| R10 | Editor dirty tracking vs. programmatic `set_value` — restoring a tab would mark it dirty. | Restore with `EditorState::set_value` (no change event) and subscribe to `InputEvent::Change` only. |
+| R11 | Losing unsaved work on quit or on a folder switch. | **Open.** A dirty tab's own close button prompts, but `close_all_documents` (folder switch) and the quit hook discard silently — the hook only counts the dirty files on stderr, because no window is left to ask in. Closing either gap means one prompt that walks the dirty documents before the discard. |
+| R12 | A persisted layout from a future or older build, or a panel id that no longer exists. | `SessionState.version` gate; an unknown panel survives as a placeholder; any load error falls back to the default layout. |
+| R13 | Custom title bar drag/close on Windows interacts with the tray "hide on close" guard. | Reuse `tray::keep_window_on_close`; verify the window buttons and that the tray still shows and hides the window. |
+| R14 | Lucide font glyphs: baseline/centring, and a 1 MB TTF in the binary. | Render icons in a fixed-size flex box; fall back to `gpui_kit::assets::IconName` for a single icon if its metrics look off. |
+| R15 | Tree-sitter grammar features inflate build time and binary size. | Keep the grammar list in `Cargo.toml` minimal; the text viewer must still work when a grammar is missing. |
+| R16 | The dock holds `Arc<dyn PanelView>`; a tab's title and close button only reach the skin through `panel_handle`. | Always wrap panels with `panel_handle(...)`; never hand a bare `Entity<P>` to the dock. |
+
 ## Verifying UI changes
 
 Unit tests cannot see layout. `scripts/` drives the real window through Win32
@@ -202,7 +232,7 @@ The existing code is the style guide. In particular:
 
 - Comments explain **why**, not what. A comment restating the code is noise; one
   naming the trap it avoids earns its place. Risks referenced as `risk R11` map
-  to `docs/plan.md` §7.
+  to the [risk register](#risk-register) above.
 - Doc comments on public items say what the thing is for and what it costs, not
   just what it does.
 - Prefer a `type` alias over a complex inline type that clippy flags.

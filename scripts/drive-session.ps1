@@ -1,6 +1,5 @@
-# Verifies that a restart restores the folder, the tabs and the pane widths.
-# The plan's step 10 asks for exactly this: open files, move a divider, restart,
-# and find the same layout.
+# Verifies that a restart restores the folder, the tabs and the pane widths:
+# open files, move a divider, restart, and find the same layout.
 param([string]$OutDir = "$env:TEMP\ll-shots")
 
 Add-Type -AssemblyName System.Windows.Forms, System.Drawing

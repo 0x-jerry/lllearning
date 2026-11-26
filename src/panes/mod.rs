@@ -3,17 +3,15 @@
 //! A side pane is a dockable panel plus the metadata the activity strip needs to
 //! offer it. Everything the shell does with a pane goes through this module, so
 //! adding a pane is a new file and one [`register_pane`] call — no edits to the
-//! shell (plan §5.1).
+//! shell.
 //!
 //! # Writing a pane
 //!
 //! A pane is an ordinary GPUI entity with a [`Focusable`] handle and a `Render`
-//! impl. [`impl_pane_panel!`] then supplies the five dock traits every pane
-//! shares, so a pane author writes only what is specific to the pane:
-//!
-//! ```ignore
-//! impl_pane_panel!(MyPane, "my-pane", |this, cx| this.title(cx), |this, cx| json!({}));
-//! ```
+//! impl, plus the five dock traits every pane shares. Those are written by hand
+//! rather than generated, because each pane's `title` and `dump` payload is its
+//! own; [`register_pane`] supplies the dock's rebuild path, not the traits.
+//! `panes/explorer.rs` is the shortest complete example.
 
 pub mod browser;
 pub mod explorer;

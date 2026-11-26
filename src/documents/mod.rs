@@ -1,7 +1,7 @@
 //! The document seam: who can display a given file, and how to open it.
 //!
 //! The center of the shell is a dock tab group whose panels are documents. The
-//! *kind* of viewer is chosen by file type, never by the user (plan §2.2), so
+//! *kind* of viewer is chosen by file type, never by the user, so
 //! opening a file means scoring every registered provider against what was
 //! sniffed from the disk and taking the best.
 //!

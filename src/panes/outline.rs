@@ -1,7 +1,7 @@
 //! The outline pane: the headings of the active markdown document, or the
 //! symbols of the active code file.
 //!
-//! This pane exists to prove the seam (plan step 11): it is a new module plus one
+//! This pane exists to prove the seam: it is a new module plus one
 //! `register_pane` line, and nothing in `app/shell.rs` or `app/skin.rs` changed to
 //! accommodate it. It reads the active document through the shell and extracts
 //! its outline with plain text scanning — no parser, because an outline that
