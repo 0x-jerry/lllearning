@@ -58,9 +58,13 @@ provider.
 register_pane(cx, Rc::new(MyPane));
 ```
 
-Nothing in `app/shell.rs` or `app/skin.rs` changes. `panes/outline.rs` exists to
-prove this: it is a module and one registration line, and the left strip gained
-a third button.
+Nothing in `app/shell.rs` or `app/skin.rs` changes. That is measured, not
+asserted: adding a throwaway pane took one new file plus two lines in
+`panes/mod.rs`, and `git status -- src/app` was empty.
+
+The three panes that ship are `explorer` (the tree), `browser` (the webview) and
+`outline` (headings of the active file, or symbols in code). The outline exists
+partly to keep the seam honest.
 
 ### The document seam — `src/documents/`
 
