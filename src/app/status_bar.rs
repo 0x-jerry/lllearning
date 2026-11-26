@@ -5,21 +5,25 @@
 //! the viewer reports one, and whether the tree is being watched.
 
 use gpui::component::{ActiveTheme as _, status_bar::StatusBar};
-use gpui::{AnyElement, App, IntoElement, SharedString, Styled as _, div, px};
+use gpui::{AnyElement, App, IntoElement, ParentElement as _, SharedString, Styled as _, div, px};
 use gpui_rsx::rsx;
+use lucide_icons::Icon;
 
-use crate::{app::shell::AppShell, workspace::fs_util};
+use crate::{app::shell::AppShell, icons, workspace::fs_util};
 
 /// The footer as an element.
 ///
 /// Returns an owned element so the caller keeps `cx` free for its own tree.
 pub fn render(shell: &AppShell, cx: &App) -> AnyElement {
-    let root = shell
-        .workspace()
-        .read(cx)
-        .root()
-        .map(|path| path.display().to_string())
-        .unwrap_or_else(|| "No folder open".to_owned());
+    let root = shell.workspace().read(cx).root().map(|path| {
+        rsx! {
+            <div class="flex flex-row items-center gap-1 min-w-0">
+                {icons::icon(Icon::Book, 12.)}
+                <div class="truncate">{fs_util::file_name_of(path)}</div>
+            </div>
+        }
+        .into_any_element()
+    });
     let watching = shell.workspace().read(cx).is_watching();
     let dirty_count = shell
         .documents()
@@ -27,7 +31,10 @@ pub fn render(shell: &AppShell, cx: &App) -> AnyElement {
         .filter(|document| document.read(cx).is_dirty(cx))
         .count();
 
-    let mut bar = StatusBar::new().left(SharedString::from(root));
+    let mut bar = StatusBar::new().left(match root {
+        Some(root) => root,
+        None => SharedString::from("No folder open").into_any_element(),
+    });
 
     if let Some(document) = shell.active_document(cx) {
         let document = document.read(cx);
