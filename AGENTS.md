@@ -486,13 +486,3 @@ The existing code is the style guide. In particular:
   for what markup cannot say — a runtime `match` around a whole element, a
   `map` over children, an element handed to a function. `rsx!` expands to the
   same builder calls at compile time, so this costs nothing.
-
-## Do not
-
-- Do not add a dependency without a reason in a comment.
-- Do not renumber or rename a `PaneProvider::id` or a panel name — it is written
-  into the session file, and renaming turns every saved layout into an
-  "Unavailable" tab.
-- Do not edit `statics/` (the start page and the page setup script); they are
-  embedded with `include_str!` and are not part of the shell.
-- Do not commit `target/`, `node_modules/`, or a `session.json`.
