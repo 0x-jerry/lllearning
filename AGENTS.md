@@ -113,7 +113,8 @@ activation hook.
 2. Implement `DocumentProvider` (`id`, `title`, `score`, `open`) and a
    `DocumentController` for the view (`is_dirty`, `save`, `focus`,
    `reload_from_disk`, `focus_handle`, `is_stale`, `accept_disk_change`, and
-   optionally `mark_stale`, `language`, `cursor`, `outline`, `goto_line`).
+   optionally `mark_stale`, `language`, `cursor`, `outline`, `goto_line`,
+   `view_state`, `restore_view_state`).
 3. One `register_document_provider(cx, Rc::new(MyProvider));` line in
    `documents::register_builtins`.
 
@@ -141,6 +142,19 @@ not ask to be redrawn, so a viewer whose caret moves without a change has to
 re-render itself (see `MarkdownView::new`, which observes the editor and
 compares the position — observing the editor's notifications alone would redraw
 the view twice a second, because its blink cycle runs off its own entity).
+
+A viewer keeps what it wants to remember about itself — the markdown viewer's
+layout, today — by answering `view_state` and applying it in
+`restore_view_state`. Each viewer defines its own state type there
+(`MarkdownViewState`, a struct of serde-derived fields) and the seam's
+`ViewState` carries it opaquely, so the shell moves it into the session file and
+back without knowing what is in it. Names inside it are written to disk: a value
+this build cannot decode leaves the viewer at its defaults rather than failing
+the open (risk R12). The session is written on quit *and* by
+`AppShell::schedule_session_save`, and the driver scripts kill the process
+rather than quitting it, so a change only the viewer knows about has to ask for
+the write itself — `MarkdownView::cycle_layout` is why that method is
+`pub(crate)` rather than private.
 
 `score` returns `Option<u8>`, higher wins, `None` means "cannot open". The
 current table — asserted by tests, so change the tests with it:

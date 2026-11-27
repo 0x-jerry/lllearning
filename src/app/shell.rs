@@ -447,7 +447,16 @@ impl AppShell {
                 window,
                 cx,
             ) {
-                Some(document) => self.documents.push(document),
+                Some(document) => {
+                    // The viewer's own state goes back after it is built, because
+                    // only the viewer knows what its saved value means. Cloned out
+                    // first: applying it re-enters the app through `cx`.
+                    if let Some(state) = &saved.view {
+                        let controller = document.read(cx).controller().clone();
+                        controller.restore_view_state(state, cx);
+                    }
+                    self.documents.push(document)
+                }
                 // The file or its viewer is gone. The tab is kept rather than
                 // dropped, because the session named it (risk R12).
                 None => {
@@ -880,7 +889,11 @@ impl AppShell {
     /// writing on every event would rewrite the file dozens of times per
     /// gesture. The debounce coalesces them; the newest write wins because each
     /// task reads the layout when it fires rather than when it was spawned.
-    fn schedule_session_save(&mut self, window: &Window, cx: &mut Context<Self>) {
+    ///
+    /// A viewer calls this for the state only it knows about — the markdown
+    /// viewer's layout switch — because nothing else about that change reaches
+    /// the shell.
+    pub(crate) fn schedule_session_save(&mut self, window: &Window, cx: &mut Context<Self>) {
         // A save already pending covers this change too.
         if self.save_task.is_some() {
             return;
@@ -914,8 +927,14 @@ impl AppShell {
             documents: self
                 .documents()
                 .iter()
-                .map(|document| crate::state::SavedDocument {
-                    path: document.read(cx).path().to_path_buf(),
+                .map(|document| {
+                    let document = document.read(cx);
+                    crate::state::SavedDocument {
+                        path: document.path().to_path_buf(),
+                        // The controller reads its own view, so the shell never
+                        // has to know what a viewer keeps.
+                        view: document.controller().view_state(cx),
+                    }
                 })
                 .collect(),
             active_document: self.documents.saved_active(),

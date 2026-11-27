@@ -74,12 +74,19 @@ fn open_by_default() -> bool {
 
 /// A document that was open.
 ///
-/// Only the path is kept: the viewer is chosen by scoring the file's type when
-/// it is reopened, so a build that gained a better viewer for that type opens it
-/// with the better one instead of replaying a stale choice.
+/// The path is kept, and only the path decides how it reopens: the viewer is
+/// chosen by scoring the file's type again, so a build that gained a better
+/// viewer for that type opens it with the better one instead of replaying a
+/// stale choice. What the viewer itself remembers — the markdown viewer's
+/// layout, today — travels beside it in [`Self::view`].
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct SavedDocument {
     pub path: PathBuf,
+    /// The viewer's own state, opaque here: only the viewer that wrote it knows
+    /// what it means (see `documents::ViewState`). Absent for a viewer that has
+    /// nothing to keep, and for every tab written before this field existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub view: Option<serde_json::Value>,
 }
 
 /// A window position and size, in logical pixels.
@@ -210,6 +217,7 @@ mod tests {
             },
             documents: vec![SavedDocument {
                 path: PathBuf::from("/work/notes.md"),
+                view: Some(serde_json::json!({ "layout": "split" })),
             }],
             active_document: Some(0),
             window: Some(SavedBounds {
@@ -288,6 +296,15 @@ mod tests {
         // Written before the bounds were saved, or hand-edited without them.
         let session: SessionState = serde_json::from_str(r#"{"version":2}"#).expect("decode");
         assert_eq!(session.window, None);
+    }
+
+    #[test]
+    fn a_document_without_view_state_keeps_none() {
+        // Every tab written before viewers saved anything of their own.
+        let session: SessionState =
+            serde_json::from_str(r#"{"version":2,"documents":[{"path":"/work/a.rs"}]}"#)
+                .expect("decode");
+        assert_eq!(session.documents[0].view, None);
     }
 
     #[test]

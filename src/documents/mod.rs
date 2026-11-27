@@ -104,6 +104,19 @@ pub struct OpenContext {
     pub workspace: Entity<Workspace>,
 }
 
+/// What a viewer wants to remember about itself between runs.
+///
+/// Each viewer defines the type it saves — `MarkdownViewState` is today's — and
+/// serialises it into this: the shell moves the value into the session file and
+/// back without ever looking inside, so the shape and the names in it belong to
+/// the viewer alone. The method pair takes no type parameter because a
+/// `dyn DocumentController` has to be able to hand one out.
+///
+/// Decoding is the viewer's cue to fall back to its defaults, never to fail an
+/// open: a value this build cannot read is a session written by another build,
+/// or one hand-edited (risk R12).
+pub type ViewState = serde_json::Value;
+
 /// Object-safe handle over a document viewer, so the shell can drive any of
 /// them uniformly.
 ///
@@ -156,6 +169,25 @@ pub trait DocumentController {
     fn cursor(&self, cx: &App) -> Option<(u32, u32)> {
         let _ = cx;
         None
+    }
+
+    /// The state the viewer wants restored next time, or `None` when the file
+    /// itself is all it needs.
+    ///
+    /// The shell writes it into the session without interpreting it; the viewer
+    /// decides both the shape and what a missing or unreadable value means.
+    fn view_state(&self, cx: &App) -> Option<ViewState> {
+        let _ = cx;
+        None
+    }
+
+    /// Apply what [`Self::view_state`] returned on the previous run.
+    ///
+    /// Called once, after the viewer is built and before it is first drawn on
+    /// screen. A value this build does not understand leaves the viewer at its
+    /// defaults rather than failing the open.
+    fn restore_view_state(&self, state: &ViewState, cx: &mut App) {
+        let _ = (state, cx);
     }
 
     /// The outline of the document's contents, if this viewer has one.

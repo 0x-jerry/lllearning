@@ -18,7 +18,7 @@ use gpui::component::{
 use gpui::{
     App, AppContext as _, Context, Entity, EventEmitter, FocusHandle, Focusable,
     InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString, Styled as _,
-    Subscription, Window, div, px,
+    Subscription, WeakEntity, Window, div, px,
 };
 use gpui_rsx::rsx;
 
@@ -26,6 +26,7 @@ use super::{
     DocumentContent, DocumentController, DocumentEvent, DocumentProvider, OpenContext, Sniff,
     sniff, status_bar_helper::editor_status_bar,
 };
+use crate::app::shell::AppShell;
 
 /// Markdown beats text, and loses to image and video.
 const SCORE: u8 = 70;
@@ -59,7 +60,7 @@ impl DocumentProvider for MarkdownProvider {
                 .line_number(true)
         });
 
-        let view = cx.new(|cx| MarkdownView::new(path, editor, cx));
+        let view = cx.new(|cx| MarkdownView::new(path, editor, ctx.shell, cx));
         let controller: Rc<dyn DocumentController> =
             Rc::new(MarkdownController { view: view.clone() });
         let watched = view.clone();
@@ -124,6 +125,32 @@ impl DocumentController for MarkdownController {
         Some(SharedString::from("Markdown"))
     }
 
+    fn view_state(&self, cx: &App) -> Option<super::ViewState> {
+        // A state that cannot be encoded is a wiring bug, not something the
+        // user did: log it and let the tab reopen at its defaults next time.
+        match serde_json::to_value(MarkdownViewState {
+            layout: self.view.read(cx).layout,
+        }) {
+            Ok(state) => Some(state),
+            Err(error) => {
+                log::warn!("could not encode the markdown view state: {error}");
+                None
+            }
+        }
+    }
+
+    fn restore_view_state(&self, state: &super::ViewState, cx: &mut App) {
+        // A value this build does not understand leaves the default in place
+        // rather than failing the open (risk R12).
+        let Ok(state) = serde_json::from_value::<MarkdownViewState>(state.clone()) else {
+            return;
+        };
+        self.view.update(cx, |view, cx| {
+            view.layout = state.layout;
+            cx.notify();
+        });
+    }
+
     fn cursor(&self, cx: &App) -> Option<(u32, u32)> {
         let position = self.view.read(cx).editor.read(cx).cursor_position();
         Some((position.line + 1, position.character + 1))
@@ -150,15 +177,32 @@ impl DocumentController for MarkdownController {
 }
 
 /// How much of the pane the preview takes.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+///
+/// The names are written to the session file, so renaming one loses the layout
+/// of every document already saved under the old name — the same rule the pane
+/// ids follow.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 enum Layout {
     /// Editor and preview side by side.
+    #[serde(rename = "split")]
     Split,
     /// Editor only.
     #[default]
+    #[serde(rename = "editor")]
     EditorOnly,
     /// Preview only.
+    #[serde(rename = "preview")]
     PreviewOnly,
+}
+
+/// What the markdown viewer keeps between runs.
+///
+/// Its own type, so the session file's shape is spelled here rather than in the
+/// shell: a layout name this build does not know fails to decode and the viewer
+/// opens at its default.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct MarkdownViewState {
+    layout: Layout,
 }
 
 impl Layout {
@@ -181,6 +225,9 @@ pub struct MarkdownView {
     dirty: bool,
     stale: bool,
     layout: Layout,
+    /// The shell, because the layout is part of the session and only the shell
+    /// writes that file (see [`Self::cycle_layout`]).
+    shell: WeakEntity<AppShell>,
     /// The caret position the status bar was last drawn for, so a notify that
     /// does not move the caret does not redraw the view.
     last_cursor: Position,
@@ -189,7 +236,12 @@ pub struct MarkdownView {
 }
 
 impl MarkdownView {
-    fn new(path: PathBuf, editor: Entity<EditorState>, cx: &mut Context<Self>) -> Self {
+    fn new(
+        path: PathBuf,
+        editor: Entity<EditorState>,
+        shell: WeakEntity<AppShell>,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let focus_handle = cx.focus_handle();
         let change = cx.subscribe(&editor, |this: &mut Self, _, event: &InputEvent, cx| {
             if matches!(event, InputEvent::Change) {
@@ -220,6 +272,7 @@ impl MarkdownView {
             dirty: false,
             stale: false,
             layout: Layout::default(),
+            shell,
             last_cursor,
             _change: change,
             _cursor: cursor,
@@ -251,13 +304,22 @@ impl MarkdownView {
         self.focus_handle.focus(window, cx);
     }
 
-    fn cycle_layout(&mut self, cx: &mut Context<Self>) {
+    /// Step to the next layout: split, editor only, preview only, and around.
+    ///
+    /// The layout is saved in the session, and this is one of the few changes
+    /// that does not reach the shell on its own, so the save is asked for here
+    /// rather than left to the next unrelated write.
+    fn cycle_layout(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.layout = match self.layout {
             Layout::Split => Layout::EditorOnly,
             Layout::EditorOnly => Layout::PreviewOnly,
             Layout::PreviewOnly => Layout::Split,
         };
         cx.notify();
+        // A shell that is gone has nothing to write; the toggle still applies.
+        let _ = self
+            .shell
+            .update(cx, |shell, cx| shell.schedule_session_save(window, cx));
     }
 
     fn layout_label(&self) -> &'static str {
@@ -296,7 +358,7 @@ impl Render for MarkdownView {
                 ghost
                 class="size-5 p-0"
                 tooltip={self.layout_label()}
-                onClick={cx.listener(|this, _, _, cx| this.cycle_layout(cx))}
+                onClick={cx.listener(|this, _, window, cx| this.cycle_layout(window, cx))}
             >
                 {crate::icons::icon(self.layout.icon(), 14.)}
             </Button>
@@ -352,7 +414,7 @@ impl Render for MarkdownView {
                     {if show_preview {
                         rsx! {
                             <div class="flex-1 min-w-0 overflow-hidden">
-                                {gpui::base::markdown(text).scrollable(true)}
+                                <gpui::base::markdown(text) scrollable={true} class="px-4" />
                             </div>
                         }
                     } else {
