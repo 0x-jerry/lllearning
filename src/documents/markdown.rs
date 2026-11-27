@@ -2,7 +2,8 @@
 //! and a toggle between editor-only and split.
 //!
 //! The preview reuses the editor's text, so there is one buffer and one save
-//! path — the same dirty tracking as the text viewer.
+//! path — the same dirty tracking as the text viewer. The bottom edge is the
+//! shared status bar, with the layout switch as one of its right-hand items.
 
 use std::{
     path::{Path, PathBuf},
@@ -10,9 +11,9 @@ use std::{
 };
 
 use gpui::component::{
-    ActiveTheme as _, Sizable as _,
+    ActiveTheme as _,
     button::{Button, ButtonVariants as _},
-    input::{Editor, EditorState, InputEvent},
+    input::{Editor, EditorState, InputEvent, Position},
 };
 use gpui::{
     App, AppContext as _, Context, Entity, EventEmitter, FocusHandle, Focusable,
@@ -22,7 +23,8 @@ use gpui::{
 use gpui_rsx::rsx;
 
 use super::{
-    DocumentContent, DocumentController, DocumentEvent, DocumentProvider, OpenContext, Sniff, sniff,
+    DocumentContent, DocumentController, DocumentEvent, DocumentProvider, OpenContext, Sniff,
+    sniff, status_bar_helper::editor_status_bar,
 };
 
 /// Markdown beats text, and loses to image and video.
@@ -159,6 +161,18 @@ enum Layout {
     PreviewOnly,
 }
 
+impl Layout {
+    /// The glyph the status bar's switch draws for this layout: a pen for the
+    /// editor, columns for the split, an eye for the preview.
+    fn icon(self) -> lucide_icons::Icon {
+        match self {
+            Layout::Split => lucide_icons::Icon::Columns2,
+            Layout::EditorOnly => lucide_icons::Icon::SquarePen,
+            Layout::PreviewOnly => lucide_icons::Icon::Eye,
+        }
+    }
+}
+
 /// The markdown viewer's state.
 pub struct MarkdownView {
     path: PathBuf,
@@ -167,7 +181,11 @@ pub struct MarkdownView {
     dirty: bool,
     stale: bool,
     layout: Layout,
+    /// The caret position the status bar was last drawn for, so a notify that
+    /// does not move the caret does not redraw the view.
+    last_cursor: Position,
     _change: Subscription,
+    _cursor: Subscription,
 }
 
 impl MarkdownView {
@@ -182,6 +200,19 @@ impl MarkdownView {
                 cx.notify();
             }
         });
+        // The status bar shows the caret, and the editor emits no event for a
+        // move that changes no text. It does notify, but also for things that
+        // leave the caret where it is (its blink cycle runs off its own
+        // entity), so this redraws only when the position actually moved —
+        // otherwise the preview would be re-rendered twice a second.
+        let last_cursor = editor.read(cx).cursor_position();
+        let cursor = cx.observe(&editor, |this: &mut Self, editor, cx| {
+            let position = editor.read(cx).cursor_position();
+            if position != this.last_cursor {
+                this.last_cursor = position;
+                cx.notify();
+            }
+        });
         Self {
             path,
             editor,
@@ -189,7 +220,9 @@ impl MarkdownView {
             dirty: false,
             stale: false,
             layout: Layout::default(),
+            last_cursor,
             _change: change,
+            _cursor: cursor,
         }
     }
 
@@ -253,8 +286,28 @@ impl Render for MarkdownView {
         let warning = cx.theme().warning;
         let warning_foreground = cx.theme().warning_foreground;
         let border = cx.theme().border;
-        let muted = cx.theme().muted_foreground;
-        let layout_label = self.layout_label();
+
+        let position = self.editor.read(cx).cursor_position();
+        // The lucide font is not an SVG asset, so the glyph goes in as a child
+        // rather than through `Button::icon`; the square is spelled in `class`
+        // because `xsmall` sizing adds padding a status bar item cannot spare.
+        let layout_switch = rsx! {
+            <Button("markdown-layout")
+                ghost
+                class="size-5 p-0"
+                tooltip={self.layout_label()}
+                onClick={cx.listener(|this, _, _, cx| this.cycle_layout(cx))}
+            >
+                {crate::icons::icon(self.layout.icon(), 14.)}
+            </Button>
+        };
+        let status = editor_status_bar(
+            cx,
+            "Markdown",
+            &text,
+            Some((position.line + 1, position.character + 1)),
+        )
+        .right(layout_switch);
 
         rsx! {
             <div
@@ -281,19 +334,6 @@ impl Render for MarkdownView {
                 } else {
                     rsx! { <div /> }
                 }}
-                <div
-                    class="flex flex-row items-center justify-between px-2 py-1"
-                    border_b_1
-                    border_color={border}
-                >
-                    <div class="text-xs" text_color={muted}>{"Markdown"}</div>
-                    <Button("markdown-layout")
-                        label={layout_label}
-                        xsmall
-                        ghost
-                        onClick={cx.listener(|this, _, _, cx| this.cycle_layout(cx))}
-                    />
-                </div>
                 <div class="flex flex-row flex-1 min-h-0">
                     {if show_editor {
                         rsx! {
@@ -319,6 +359,7 @@ impl Render for MarkdownView {
                         rsx! { <div /> }
                     }}
                 </div>
+                {status}
             </div>
         }
     }

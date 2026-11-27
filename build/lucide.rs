@@ -58,15 +58,25 @@ fn variants(manifest: &Path) -> BTreeSet<String> {
     variants
 }
 
-/// `FolderOpen` → `folder-open`, which is how lucide names its icons.
+/// `FolderOpen` → `folder-open`, and `Columns2` → `columns-2`, which is how
+/// lucide names its icons.
 fn kebab_case(variant: &str) -> String {
     let mut out = String::with_capacity(variant.len() + 4);
     let chars: Vec<char> = variant.chars().collect();
     for (i, c) in chars.iter().enumerate() {
-        if c.is_uppercase() && i > 0 {
+        if i > 0 {
             let previous = chars[i - 1];
-            let next_is_lower = chars.get(i + 1).is_some_and(|next| next.is_lowercase());
-            if previous.is_lowercase() || previous.is_numeric() || next_is_lower {
+            // A capital starts a new word, except where it opens a run of
+            // capitals: `Columns2Cog` is `columns-2-cog`, `SquarePen` is
+            // `square-pen`.
+            let word_break = c.is_uppercase()
+                && (previous.is_lowercase()
+                    || previous.is_numeric()
+                    || chars.get(i + 1).is_some_and(|next| next.is_lowercase()));
+            // A digit also starts a new word: lucide spells the numbered
+            // variants with a dash (`columns-2`, `arrow-up-0-1`).
+            let number_break = c.is_ascii_digit() && previous.is_ascii_alphabetic();
+            if word_break || number_break {
                 out.push('-');
             }
         }

@@ -13,7 +13,7 @@ use std::{
 use gpui::component::{
     ActiveTheme as _, Sizable as _,
     button::Button,
-    input::{Editor, EditorState, InputEvent},
+    input::{Editor, EditorState, InputEvent, Position},
 };
 use gpui::{
     App, AppContext as _, Context, Entity, EventEmitter, FocusHandle, Focusable,
@@ -23,7 +23,8 @@ use gpui::{
 use gpui_rsx::rsx;
 
 use super::{
-    DocumentContent, DocumentController, DocumentEvent, DocumentProvider, OpenContext, Sniff, sniff,
+    DocumentContent, DocumentController, DocumentEvent, DocumentProvider, OpenContext, Sniff,
+    sniff, status_bar_helper::editor_status_bar,
 };
 
 /// Scores: high enough that nothing else claims a text file by accident, low
@@ -169,8 +170,12 @@ pub struct TextView {
     dirty: bool,
     /// Whether the file changed on disk while the buffer was clean.
     stale: bool,
+    /// The caret position the status bar was last drawn for, so a notify that
+    /// does not move the caret does not redraw the view.
+    last_cursor: Position,
     /// Dropped with the view, so the subscription does not outlive it.
     _change: Subscription,
+    _cursor: Subscription,
 }
 
 impl TextView {
@@ -193,6 +198,19 @@ impl TextView {
             }
         });
 
+        let last_cursor = editor.read(cx).cursor_position();
+        // The status bar shows the caret, and the editor emits no event for a
+        // move that changes no text. It does notify, but also for things that
+        // leave the caret where it is (its blink cycle runs off its own
+        // entity), so this redraws only when the position actually moved.
+        let cursor = cx.observe(&editor, |this: &mut Self, editor, cx| {
+            let position = editor.read(cx).cursor_position();
+            if position != this.last_cursor {
+                this.last_cursor = position;
+                cx.notify();
+            }
+        });
+
         Self {
             path,
             language,
@@ -200,7 +218,9 @@ impl TextView {
             focus_handle,
             dirty: false,
             stale: false,
+            last_cursor,
             _change: change,
+            _cursor: cursor,
         }
     }
 
@@ -247,6 +267,15 @@ impl Render for TextView {
         let warning_foreground = cx.theme().warning_foreground;
         let stale = self.stale;
 
+        let text = self.editor.read(cx).value();
+        let position = self.editor.read(cx).cursor_position();
+        let status = editor_status_bar(
+            cx,
+            sniff::language_label(self.language),
+            &text,
+            Some((position.line + 1, position.character + 1)),
+        );
+
         rsx! {
             <div
                 class="flex flex-col size-full"
@@ -280,6 +309,7 @@ impl Render for TextView {
                 <div class="flex-1 min-h-0">
                     {Editor::new(&self.editor).size_full().bordered(false)}
                 </div>
+                {status}
             </div>
         }
     }

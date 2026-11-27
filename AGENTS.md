@@ -57,6 +57,7 @@ src/app/              the shell and its chrome
   mod.rs              init(): the one place a feature is switched on
 src/panes/            side-pane seam: explorer, browser, outline
 src/documents/        document seam: text, markdown, image, video, refused, sniff
+  status_bar_helper.rs  the items an editor's status bar says: type, caret, size
 src/workspace/        folder root, lazy tree, notify watcher, fs helpers
 src/state.rs          the session file, the window's bounds included
 src/logging.rs        the log sink (stdout) and the startup marks
@@ -126,6 +127,20 @@ active *document* changes, not when a heading is typed.
 outline itself (the pane then says so); `Some(vec![])` means "this viewer
 outlines, and this file has no entries". Only `markdown` answers today. The pane
 knows no syntax — a new outlining viewer needs no edit to it.
+
+An editor viewer draws a status bar along its bottom edge rather than its own
+footer, because the row itself is the component library's
+`component::status_bar::StatusBar` — three regions, any `IntoElement`s in them,
+theme colours and border already applied. `documents::status_bar_helper` is the
+seam above it: `editor_status_bar(cx, file_type, text, cursor)` returns that
+component with the file type on the left and the caret, line and character
+counts on the right, and a viewer chains its own actions on with
+`.right(..)` — `markdown`'s layout switch is one. The counts are derived from
+the buffer it is handed, so they cannot drift from the text; but the bar does
+not ask to be redrawn, so a viewer whose caret moves without a change has to
+re-render itself (see `MarkdownView::new`, which observes the editor and
+compares the position — observing the editor's notifications alone would redraw
+the view twice a second, because its blink cycle runs off its own entity).
 
 `score` returns `Option<u8>`, higher wins, `None` means "cannot open". The
 current table — asserted by tests, so change the tests with it:

@@ -1,10 +1,10 @@
 //! Cuts the two icon fonts down to the glyphs this app draws.
 //!
 //! Both fonts ship whole in their crates: lucide's is 1 MB and the nerd font's
-//! 2.3 MB. The app draws 13 lucide glyphs and the ~225 private-use glyphs in
-//! `devicons`' table, so almost all of both files would be unreachable data in
-//! the binary. This subsets them into `OUT_DIR`, and `src/icons.rs` embeds the
-//! results.
+//! 2.3 MB. The app draws a dozen-odd lucide glyphs and the ~225 private-use
+//! glyphs in `devicons`' table, so almost all of both files would be
+//! unreachable data in the binary. This subsets them into `OUT_DIR`, and
+//! `src/icons.rs` embeds the results.
 //!
 //! Each font's glyph set is derived rather than listed: [`lucide`] scans `src/`
 //! for the icons the UI names, and [`devicons`] reads the file-type table out of
@@ -12,7 +12,8 @@
 //!
 //! Generation is skipped when the inputs are unchanged: a release build with
 //! LTO takes minutes, and re-subsetting on every build would add to it for no
-//! change in output.
+//! change in output. A changed glyph list counts as a changed input, so adding
+//! an `Icon::Variant` still reaches the font.
 
 mod devicons;
 mod font;
@@ -31,24 +32,20 @@ fn main() {
 
     let lucide_source = font::crate_file("lucide-icons", "lucide.ttf");
     let lucide_output = out_dir.join("lucide-subset.ttf");
-    // `rerun-if-changed` covers a changed input; the staleness check also covers
-    // an output missing because a previous run was interrupted.
-    if font::stale(&lucide_output, &[&lucide_source]) {
-        font::subset_font(
-            &lucide_source,
-            &lucide_output,
-            &lucide::drawn_glyphs(&manifest),
-            font::Vendor::Lucide,
-        );
-    }
+    // The staleness check covers both a changed font and a changed glyph list;
+    // it also covers an output missing because a previous run was interrupted.
+    font::subset_if_changed(
+        &lucide_source,
+        &lucide_output,
+        &lucide::drawn_glyphs(&manifest),
+        font::Vendor::Lucide,
+    );
 
     let nerd_output = out_dir.join("SymbolsNerdFontMono-subset.ttf");
-    if font::stale(&nerd_output, &[&nerd_source]) {
-        font::subset_font(
-            &nerd_source,
-            &nerd_output,
-            &devicons::drawn_glyphs(),
-            font::Vendor::NerdFont,
-        );
-    }
+    font::subset_if_changed(
+        &nerd_source,
+        &nerd_output,
+        &devicons::drawn_glyphs(),
+        font::Vendor::NerdFont,
+    );
 }

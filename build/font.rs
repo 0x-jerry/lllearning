@@ -86,6 +86,32 @@ pub fn crate_file(crate_name: &str, file: &str) -> PathBuf {
     panic!("cannot find {file} in the {crate_name} crate; run `cargo fetch`");
 }
 
+/// Subset `source` to `glyphs` and write it to `output`, unless both the font
+/// and the glyph list are unchanged since the last run.
+///
+/// `cargo:rerun-if-changed=src` only makes this script run again; it says
+/// nothing about whether the subset needs rebuilding. The glyph list is an
+/// input like the font is — a new `Icon::Variant` in the UI changes it without
+/// touching the font's timestamp, so a timestamp alone would leave the new
+/// glyph out and draw tofu.
+pub fn subset_if_changed(source: &Path, output: &Path, glyphs: &[u32], vendor: Vendor) {
+    // The record beside the output is what makes the glyph list comparable
+    // across runs; the font itself only carries the glyphs, not the request.
+    let record = output.with_extension("glyphs");
+    let wanted = glyphs
+        .iter()
+        .map(u32::to_string)
+        .collect::<Vec<_>>()
+        .join(",");
+    let recorded = fs::read_to_string(&record).ok();
+    if !stale(output, &[source]) && recorded.as_deref() == Some(wanted.as_str()) {
+        return;
+    }
+    subset_font(source, output, glyphs, vendor);
+    fs::write(&record, wanted)
+        .unwrap_or_else(|error| panic!("cannot write {}: {error}", record.display()));
+}
+
 /// Subset `source` to `glyphs` and write it to `output`.
 ///
 /// Fails the build rather than shipping a font with a hole in it: a missing

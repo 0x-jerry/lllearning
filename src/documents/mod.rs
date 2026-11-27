@@ -21,6 +21,7 @@ pub mod image;
 pub mod markdown;
 pub mod markdown_outline;
 pub mod sniff;
+pub mod status_bar_helper;
 pub mod text;
 pub mod video;
 
