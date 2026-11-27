@@ -61,9 +61,6 @@ pub struct SideView {
     open: bool,
     /// Every pane built for this dock, by provider id.
     panes: HashMap<String, MountedPane>,
-    /// The width the session asked for, used until the resizable group has
-    /// measured itself.
-    saved_width: Option<gpui::Pixels>,
     /// The state the session saved, and the pane id it belongs to.
     ///
     /// Kept here rather than handed straight to the build because the pane is
@@ -88,7 +85,6 @@ impl SideView {
             active: None,
             open: false,
             panes: HashMap::new(),
-            saved_width: None,
             saved_state: None,
             workspace,
             shell,
@@ -104,11 +100,6 @@ impl SideView {
     /// The provider id on show, open or not.
     pub fn active(&self) -> Option<&str> {
         self.active.as_deref()
-    }
-
-    /// The width the session asked for, if it asked for one.
-    pub fn saved_width(&self) -> Option<gpui::Pixels> {
-        self.saved_width
     }
 
     /// Adopt one dock's saved state, falling back to the slot's first provider
@@ -135,9 +126,6 @@ impl SideView {
             _ => None,
         };
         self.active = id;
-        if let Some(width) = saved.width.filter(|width| *width > 0.) {
-            self.saved_width = Some(gpui::px(width));
-        }
         cx.notify();
     }
 
@@ -246,15 +234,14 @@ impl SideView {
 
     /// This dock's state, for the session file.
     ///
-    /// `width` is the dock's width as the resizable group holds it, and is `None`
-    /// while the dock is collapsed: its panel is hidden then and measures
-    /// nothing. The fallback keeps the width the user chose instead of
-    /// forgetting it on every save.
+    /// `width` is the width the shell last saw the columns laid out at: the
+    /// group measures the dock, so the dock itself has none to report, and a
+    /// hidden panel measures nothing at all.
     pub fn state(&self, width: Option<f32>, cx: &App) -> SideState {
         SideState {
             active: self.active.clone(),
             open: self.open,
-            width: width.or_else(|| self.saved_width.map(|width| width.as_f32())),
+            width,
             state: self.pane_state(cx),
         }
     }

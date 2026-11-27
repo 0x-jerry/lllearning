@@ -64,6 +64,21 @@ function Click-At($rect, $x, $y) {
     Start-Sleep -Milliseconds 700
 }
 
+# Drag the divider between the left dock and the centre from $x to $to.
+function Drag-At($rect, $x, $y, $to) {
+    [Ses]::SetCursorPos($rect.Left + $x, $rect.Top + $y) | Out-Null
+    Start-Sleep -Milliseconds 250
+    [Ses]::mouse_event(0x0002, 0, 0, 0, [IntPtr]::Zero)
+    Start-Sleep -Milliseconds 100
+    for ($i = 1; $i -le 8; $i++) {
+        $at = [int]($rect.Left + $x + ($to - $x) * $i / 8)
+        [Ses]::SetCursorPos($at, $rect.Top + $y) | Out-Null
+        Start-Sleep -Milliseconds 60
+    }
+    [Ses]::mouse_event(0x0004, 0, 0, 0, [IntPtr]::Zero)
+    Start-Sleep -Milliseconds 900
+}
+
 # First run: open two files.
 $app = Start-App
 $rect = Get-Rect $app.Handle
@@ -71,6 +86,18 @@ Click-At $rect 120 192   # a file row
 Start-Sleep -Seconds 1
 Click-At $rect 120 250   # another file row
 Start-Sleep -Seconds 1
+
+# Widen the left dock. A drag mutates the group's own state, so the session file
+# is the only thing that proves the new width was kept.
+$before = (Get-Content $sessionPath -Raw | ConvertFrom-Json).left.width
+if (-not $before) { $before = 260 }
+Drag-At $rect $before 400 ($before + 80)
+Start-Sleep -Seconds 1
+$after = (Get-Content $sessionPath -Raw | ConvertFrom-Json).left.width
+Write-Host "--- left dock width $before -> $after"
+if ([math]::Abs($after - $before - 80) -gt 14) {
+    throw "the dragged width did not reach the session file ($before -> $after)"
+}
 Save-Shot "30-first-run" $rect
 Write-Host "--- first run done; waiting for the debounced save"
 Start-Sleep -Seconds 2
@@ -82,7 +109,7 @@ Start-Sleep -Seconds 2
 Write-Host "--- session file after the first run:"
 if (Test-Path $sessionPath) { Get-Content $sessionPath -Raw } else { Write-Host "MISSING" }
 
-# Second run: the same tabs should come back.
+# Second run: the same tabs should come back, at the same widths.
 $app2 = Start-App
 $rect2 = Get-Rect $app2.Handle
 Start-Sleep -Seconds 2

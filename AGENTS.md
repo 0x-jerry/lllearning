@@ -218,15 +218,27 @@ shift.** The centre is column 1 and the docks are 0 and 2, and the session's
 saved widths are read by those indices. Never conditionally omit a panel element
 from the group; toggle `visible` instead.
 
+**A hidden panel measures zero, so the width has to be remembered outside the
+group.** `ResizableState::sizes()` is the layout, and a collapsed dock's entry
+is `0`; closing a dock after dragging it would forget the drag. `AppShell`
+keeps the last usable measurement per slot (`widths`) and writes that to the
+session, which is also what the next first frame lays the columns out at.
+
 **`ResizablePanel::size` is the *initial* size only.** A live drag mutates
 `ResizableState`, not the element. So a saved width reaches the first frame
-through `AppShell::column_size` (which reads `SideView::saved_width`), never by
-feeding `sizes()` back into `.size()` on every render — that would fight the
-drag.
+through `AppShell::column_size` (which reads `AppShell::widths`, the last layout
+it saw), never by feeding `sizes()` back into `.size()` on every render — that
+would fight the drag.
 
 **`ResizablePanelGroup::on_resize` is not what persists a width.** The
 `ResizableState` entity emits `ResizablePanelEvent::Resized`, and the shell
 subscribes to that in `subscribe_all`. A new group needs its own subscription.
+
+**A dock is `fixed`; the centre is not.** A container resize rescales every
+panel that is not fixed, in proportion — so maximizing the window grew a 160 px
+dock to 256 px, and the next save wrote the grown number, which is what came
+back on the restart. `.fixed()` keeps a dock at the width the user gave it (and
+its own divider still drags it); the centre panel takes the difference.
 
 **A pane whose contents live outside the element tree needs an activation
 hook.** `PaneContent::activation` is called by `SideView::activate` on every

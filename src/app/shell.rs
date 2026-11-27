@@ -81,6 +81,14 @@ pub struct AppShell {
     sides: HashMap<PaneSlot, Entity<SideView>>,
     /// The widths of the three columns, so a drag and a restart agree.
     columns: Entity<ResizableState>,
+    /// The width each dock was last measured at, in logical pixels.
+    ///
+    /// The measurement is the truth while a dock is open and the group has laid
+    /// the columns out, but a collapsed panel measures zero — and the width the
+    /// user dragged it to would go with it, since nothing about a hidden panel
+    /// remembers where the divider was. This is what the session write and the
+    /// next restore read instead.
+    widths: HashMap<PaneSlot, f32>,
     /// The file last revealed in the tree.
     ///
     /// The reveal must not scroll and rebuild the tree on every frame of a
@@ -161,6 +169,7 @@ impl AppShell {
             documents: DocumentsView::default(),
             sides: HashMap::new(),
             columns: columns.clone(),
+            widths: HashMap::new(),
             revealed: None,
             restoring: false,
             browser_request: None,
@@ -402,6 +411,11 @@ impl AppShell {
                 PaneSlot::Left => &session.left,
                 PaneSlot::Right => &session.right,
             };
+            // The group has measured nothing yet, so these are the widths the
+            // first frame has to place the columns at.
+            if let Some(width) = saved.width.filter(|width| *width > 0.) {
+                self.widths.insert(slot, width);
+            }
             self.side(slot, cx)
                 .update(cx, |side, cx| side.apply(saved, cx));
         }
@@ -950,7 +964,10 @@ impl AppShell {
             .sizes()
             .get(ix)
             .map(|size| size.as_f32())
-            .filter(|width| *width > 1.);
+            .filter(|width| *width > 1.)
+            // A closed dock's panel is hidden, and a hidden panel measures
+            // zero: the width it had is the last one this saw.
+            .or_else(|| self.widths.get(&slot).copied());
         match self.sides.get(&slot) {
             Some(side) => side.read(cx).state(width, cx),
             None => SideState::default(),
@@ -958,25 +975,29 @@ impl AppShell {
     }
 
     /// The width to lay a dock out at on the first frame.
+    ///
+    /// The group's own measurement wins once it has one, and is remembered as it
+    /// goes; before that — and while the dock is collapsed, which measures
+    /// nothing — the last width this saw is the answer.
     fn column_size(
-        &self,
+        &mut self,
         slot: PaneSlot,
         ix: usize,
         fallback: gpui::Pixels,
         cx: &App,
     ) -> gpui::Pixels {
-        self.columns
+        if let Some(measured) = self
+            .columns
             .read(cx)
             .sizes()
             .get(ix)
             .copied()
             .filter(|size| *size > px(1.))
-            .or_else(|| {
-                self.sides
-                    .get(&slot)
-                    .and_then(|side| side.read(cx).saved_width())
-            })
-            .unwrap_or(fallback)
+        {
+            self.widths.insert(slot, measured.as_f32());
+            return measured;
+        }
+        self.widths.get(&slot).copied().map(px).unwrap_or(fallback)
     }
 }
 
@@ -1099,7 +1120,7 @@ impl Render for AppShell {
                                 base={resizable_panel().visible(left_open)}
                                 size={left_width}
                                 size_range={LEFT_RANGE}
-                                flex_none
+                                fixed
                             >
                                 {left.clone()}
                             </resizable_panel>
@@ -1114,7 +1135,7 @@ impl Render for AppShell {
                                 base={resizable_panel().visible(right_open)}
                                 size={right_width}
                                 size_range={RIGHT_RANGE}
-                                flex_none
+                                fixed
                             >
                                 {right.clone()}
                             </resizable_panel>
