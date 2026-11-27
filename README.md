@@ -36,6 +36,22 @@ Windows 11). Linux needs X11/XWayland plus WebKitGTK 4.1 and GTK 3; macOS needs
 nothing extra. For an installer, `cargo packager --release` writes
 `target/release/lllearning_0.1.0_x64-setup.exe` and fetches NSIS on first use.
 
+## Release
+
+Pushing a tag publishes two artefacts to a GitHub release, built by
+[`.github/workflows/release.yml`](.github/workflows/release.yml):
+
+| Artefact | What it is |
+| --- | --- |
+| `lllearning_<version>_x64-setup.exe` | NSIS installer |
+| `lllearning-<version>-portable.zip` | the exe alone — nothing else is needed |
+
+The tag must be `v` + the version in `Cargo.toml` (`v0.1.0`), or the job stops
+before publishing. The exe embeds its own icon, both icon fonts, the start page
+and the theme assets, so the portable copy is one file; what it writes stays
+where it always does: `%APPDATA%\lllearning\session.json` and the WebView2
+profile beside the exe (so the folder must be writable, and never Program Files).
+
 | Keys | Action |
 | --- | --- |
 | `Ctrl+S` / `Cmd+S` | Save the active document |
@@ -46,7 +62,7 @@ nothing extra. For an installer, `cargo packager --release` writes
 ## Develop
 
 ```bash
-cargo test                         # 71 tests, ~0.3s
+cargo test                         # 92 tests, ~0.3s
 cargo fmt --check
 cargo clippy --all-targets --all-features -- -D warnings
 ```

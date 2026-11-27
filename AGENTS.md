@@ -19,7 +19,7 @@ lookup, not a typo.
 ```bash
 cargo check --all-targets          # fast feedback
 cargo build                        # the binary the driver scripts use
-cargo test                         # 80 tests, ~0.3s
+cargo test                         # 92 tests, ~0.3s
 cargo fmt --check
 cargo clippy --all-targets --all-features -- -D warnings
 ```
@@ -32,6 +32,27 @@ later.
 one codegen unit, so a full rebuild is ~9 minutes rather than ~30 s. That is the
 trade for a 42 MB binary becoming ~28 MB, and it runs once per version. Do not
 reach for it while iterating.
+
+## Releasing
+
+`.github/workflows/release.yml` runs on a `v*` tag: it installs
+`cargo-packager` (pinned — `[package.metadata.packager]` is a schema it owns),
+runs `cargo packager --release --formats nsis`, which is where the fat-LTO build
+actually happens (`before-packaging-command`), then zips the same exe as the
+portable copy — the exe is the whole app — and publishes both to a release. The
+job fails when the tag is not `v` + `Cargo.toml`'s version, so bumping and
+tagging stay one step. `workflow_dispatch` runs the job without publishing;
+`dist/` is the portable staging directory and is ignored.
+
+## Windows resources
+
+The exe's own icon is a Windows resource, which cargo knows nothing about:
+`build/exe_icon.rs` compiles `assets/lllearning.rc` into the link, so the artwork
+`assets/icon.svg` rasterises to (`assets/build-icon.ts`) is also what Explorer
+and the taskbar draw. Without it the exe carries Rust's logo while the window
+and the tray show the real one — the mismatch is the bug, not the styling. A
+toolchain with no `rc.exe` still builds; a `.rc` that fails to compile stops the
+build, because the result is that same iconless exe.
 
 **The binary must not be running when you build.** On Windows a running
 `lllearning.exe` holds the file and `cargo build` fails with
