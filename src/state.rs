@@ -4,8 +4,8 @@
 //! serialise and rebuild. The dock is gone — the shell lays the window out
 //! itself — so the layout is described here, in terms the shell can rebuild:
 //! which folder was open, which pane each side dock was showing, whether each
-//! dock was open and how wide, which documents were open in tab order and which
-//! one was on show.
+//! dock was open and how wide, which documents were open in tab order, which one
+//! was on show, and where the window sat on screen.
 
 use std::path::PathBuf;
 
@@ -82,7 +82,10 @@ pub struct SavedDocument {
     pub path: PathBuf,
 }
 
-/// A window position and size, in the platform's own units.
+/// A window position and size, in logical pixels.
+///
+/// Logical rather than device pixels, so a session moves between a high-DPI
+/// display and a normal one without the window changing apparent size.
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq)]
 pub struct SavedBounds {
     pub x: f32,
@@ -93,6 +96,22 @@ pub struct SavedBounds {
     /// to when un-maximised.
     #[serde(default)]
     pub maximized: bool,
+}
+
+impl SavedBounds {
+    /// Whether these numbers can be used as a window position and size at all.
+    ///
+    /// The session file is plain JSON and hand-editable, so a nonsense value is
+    /// a possibility rather than a bug; a window restored at one would be
+    /// invisible with no way to bring it back.
+    pub fn is_usable(&self) -> bool {
+        self.x.is_finite()
+            && self.y.is_finite()
+            && self.width.is_finite()
+            && self.height.is_finite()
+            && self.width > 0.
+            && self.height > 0.
+    }
 }
 
 impl SessionState {
@@ -262,5 +281,31 @@ mod tests {
         let text = serde_json::to_string(&session).expect("encode");
         let back: SessionState = serde_json::from_str(&text).expect("decode");
         assert!(!back.right.open);
+    }
+
+    #[test]
+    fn a_session_without_window_bounds_has_none() {
+        // Written before the bounds were saved, or hand-edited without them.
+        let session: SessionState = serde_json::from_str(r#"{"version":2}"#).expect("decode");
+        assert_eq!(session.window, None);
+    }
+
+    #[test]
+    fn a_zero_sized_window_is_not_usable() {
+        let empty = SavedBounds {
+            x: 10.,
+            y: 20.,
+            width: 0.,
+            height: 0.,
+            maximized: false,
+        };
+        assert!(!empty.is_usable());
+
+        let real = SavedBounds {
+            width: 1200.,
+            height: 760.,
+            ..empty
+        };
+        assert!(real.is_usable());
     }
 }

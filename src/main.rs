@@ -4,8 +4,8 @@
 //! session, open the window on the shell. The shell itself, its panes and its
 //! viewers live in their own modules.
 
+use gpui::WindowOptions;
 use gpui::component::TitleBar;
-use gpui::{WindowBounds, WindowOptions, px, size};
 
 mod app;
 mod documents;
@@ -53,8 +53,10 @@ fn main() {
             let session = state::load().unwrap_or_default();
 
             let options = WindowOptions {
-                window_bounds: Some(WindowBounds::centered(None, size(px(1200.), px(760.)), cx)),
-                window_min_size: Some(size(px(900.), px(600.))),
+                // The size and position the last run left, when they are still on
+                // a display; centred at the default size otherwise.
+                window_bounds: Some(app::shell::opening_bounds(&session, cx)),
+                window_min_size: Some(app::shell::MIN_WINDOW_SIZE),
                 // The title bar draws itself and owns the window drag.
                 ..TitleBar::window_options()
             };

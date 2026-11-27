@@ -140,13 +140,18 @@ pub trait DocumentController {
         let _ = cx;
     }
 
-    /// The language shown in the status bar, if the viewer has one.
+    /// The language the file is in, if the viewer has one.
+    ///
+    /// No chrome shows it since the footer went away, so this is seam surface a
+    /// future pane can read rather than something the shell calls today.
+    #[allow(dead_code)]
     fn language(&self, cx: &App) -> Option<SharedString> {
         let _ = cx;
         None
     }
 
-    /// The caret's 1-based line and column, for the status bar.
+    /// The caret's 1-based line and column, when the viewer reports one.
+    #[allow(dead_code)]
     fn cursor(&self, cx: &App) -> Option<(u32, u32)> {
         let _ = cx;
         None
@@ -215,7 +220,9 @@ pub trait DocumentProvider: 'static {
     /// Stable id, written into the persisted layout. Never rename it.
     fn id(&self) -> &'static str;
 
-    /// The name shown in menus and the status bar.
+    /// The name the viewer goes by, where something names it rather than the
+    /// file.
+    #[allow(dead_code)]
     fn title(&self) -> &'static str;
 
     /// How well this provider can show `path`. `None` means it cannot.
@@ -260,6 +267,7 @@ impl DocumentRegistry {
     }
 
     /// A provider by id.
+    #[allow(dead_code)]
     pub fn by_id(&self, id: &str) -> Option<Rc<dyn DocumentProvider>> {
         self.providers
             .iter()
@@ -282,7 +290,9 @@ pub fn provider_for(cx: &App, path: &Path, sniff: &Sniff) -> Option<Rc<dyn Docum
         .and_then(|registry| registry.best_for(path, sniff))
 }
 
-/// A provider by id, for the status bar and for rebuilding a panel.
+/// A provider by id, for a caller that has one recorded rather than a file to
+/// score.
+#[allow(dead_code)]
 pub fn provider_by_id(cx: &App, id: &str) -> Option<Rc<dyn DocumentProvider>> {
     cx.try_global::<DocumentRegistry>()
         .and_then(|registry| registry.by_id(id))
@@ -540,6 +550,7 @@ impl DocumentPanel {
     }
 
     /// The provider id.
+    #[allow(dead_code)]
     pub fn provider_id(&self) -> &'static str {
         self.provider_id
     }

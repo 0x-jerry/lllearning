@@ -88,10 +88,10 @@ pub fn language_for(ext: Option<&str>) -> &'static str {
     }
 }
 
-/// The display name of a language, for the status bar.
+/// The display name of a language, for a viewer that reports one.
 ///
-/// The tree-sitter names are lowercase identifiers; the status bar shows the
-/// language as a reader would write it.
+/// The tree-sitter names are lowercase identifiers; a reader writes the language
+/// as a word.
 pub fn language_label(language: &str) -> String {
     match language {
         "text" => "Plain Text".to_owned(),

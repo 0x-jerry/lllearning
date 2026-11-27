@@ -30,9 +30,9 @@ use gpui::component::{
     resizable::{ResizablePanelEvent, ResizableState, h_resizable, resizable_panel},
 };
 use gpui::{
-    AnyElement, App, AppContext as _, Context, Entity, EventEmitter, FocusHandle, Focusable,
-    InteractiveElement as _, IntoElement, ParentElement as _, Pixels, Point, Render, SharedString,
-    Styled as _, Subscription, Window, div, px,
+    AnyElement, App, AppContext as _, Bounds, Context, Entity, EventEmitter, FocusHandle,
+    Focusable, InteractiveElement as _, IntoElement, ParentElement as _, Pixels, Point, Render,
+    SharedString, Styled as _, Subscription, Window, WindowBounds, div, point, px, size,
 };
 use gpui_rsx::rsx;
 
@@ -44,11 +44,11 @@ use crate::{
             dialog::{self, DialogAction, DialogOptions},
         },
         side_view::SideView,
-        status_bar, title_bar,
+        title_bar,
     },
     documents::DocumentPanel,
     panes::{self, PaneSlot},
-    state::{SessionState, SideState},
+    state::{SavedBounds, SessionState, SideState},
     workspace::{Workspace, WorkspaceEvent, fs_util},
 };
 
@@ -56,6 +56,15 @@ use crate::{
 const LEFT_WIDTH: gpui::Pixels = px(260.);
 /// The width the right dock gets for the same reason.
 const RIGHT_WIDTH: gpui::Pixels = px(420.);
+
+/// The window's size when the session has none worth restoring.
+const DEFAULT_WINDOW_SIZE: gpui::Size<gpui::Pixels> = size(px(1200.), px(760.));
+/// The smallest the window may be.
+///
+/// A restored size is clamped up to it: the platform applies its minimum to a
+/// resize but not to the create, so a session saved at a tiny size would open
+/// smaller than the window can ever be dragged.
+pub const MIN_WINDOW_SIZE: gpui::Size<gpui::Pixels> = size(px(900.), px(600.));
 
 /// How narrow each side dock may be dragged, and how wide.
 const LEFT_RANGE: std::ops::Range<gpui::Pixels> = px(160.)..px(520.);
@@ -91,6 +100,12 @@ pub struct AppShell {
     browser_request: Option<String>,
     /// The pending debounced session write, held so a newer change can reuse it.
     save_task: Option<gpui::Task<()>>,
+    /// The window's bounds as last observed, for the session write.
+    ///
+    /// Held here rather than read when the session is written: the quit save runs
+    /// from a hook that has no `Window`, and the tray's Hide takes the window off
+    /// the screen without moving it, so the last observed bounds stay right.
+    bounds: Option<SavedBounds>,
     /// Dropped with the shell, so the subscriptions do not outlive it.
     _subscriptions: Vec<Subscription>,
 }
@@ -138,6 +153,7 @@ impl AppShell {
     pub fn new(session: SessionState, window: &mut Window, cx: &mut App) -> Entity<Self> {
         let workspace = Workspace::new(cx);
         let columns = cx.new(|_| ResizableState::default());
+        let bounds = Some(saved_bounds(window));
 
         let shell = cx.new(|cx| Self {
             focus_handle: cx.focus_handle(),
@@ -149,6 +165,7 @@ impl AppShell {
             restoring: false,
             browser_request: None,
             save_task: None,
+            bounds,
             _subscriptions: Vec::new(),
         });
 
@@ -205,6 +222,7 @@ impl AppShell {
     }
 
     /// The workspace folder.
+    #[allow(dead_code)]
     pub fn workspace(&self) -> &Entity<Workspace> {
         &self.workspace
     }
@@ -250,7 +268,30 @@ impl AppShell {
             },
         );
 
-        self._subscriptions = vec![workspace_subscription, columns_subscription];
+        // A move and a resize arrive the same way, and a drag produces dozens of
+        // them; the debounce is what keeps that off the disk.
+        let bounds_subscription =
+            cx.observe_window_bounds(window, |this, window, cx| this.record_bounds(window, cx));
+
+        self._subscriptions = vec![
+            workspace_subscription,
+            columns_subscription,
+            bounds_subscription,
+        ];
+    }
+
+    /// Remember where the window is, and schedule the write that keeps it.
+    ///
+    /// The platform also reports a window that merely gained or lost the
+    /// activation, so an unchanged bounds is the common case and is dropped here
+    /// rather than rewritten to the session.
+    fn record_bounds(&mut self, window: &Window, cx: &mut Context<Self>) {
+        let bounds = saved_bounds(window);
+        if self.bounds == Some(bounds) {
+            return;
+        }
+        self.bounds = Some(bounds);
+        self.schedule_session_save(window, cx);
     }
 
     /// React to a workspace event.
@@ -878,7 +919,7 @@ impl AppShell {
                 })
                 .collect(),
             active_document: self.documents.saved_active(),
-            window: None,
+            window: self.bounds,
         }
     }
 
@@ -1021,7 +1062,6 @@ impl Render for AppShell {
         };
 
         let title = title_bar::render();
-        let status = status_bar::render(self, cx);
         let columns = self.columns.clone();
 
         rsx! {
@@ -1062,10 +1102,100 @@ impl Render for AppShell {
                         </h_resizable>
                     </div>
                 </div>
-                {status}
             </div>
         }
     }
+}
+
+/// Where to open the window: the bounds the session saved, if they are still on
+/// a display, or the default centred size.
+///
+/// A display can be unplugged between runs, and a window restored onto one that
+/// is gone opens where the user cannot see it — often with nothing to drag it
+/// back with. So a saved position has to still reach a display to be used at
+/// all, and the fallback when it does not is the default.
+pub fn opening_bounds(session: &SessionState, cx: &App) -> WindowBounds {
+    let centred = || WindowBounds::centered(None, DEFAULT_WINDOW_SIZE, cx);
+    let Some(saved) = session.window else {
+        return centred();
+    };
+    if !saved.is_usable() {
+        return centred();
+    }
+
+    let restore = Bounds::new(
+        point(px(saved.x), px(saved.y)),
+        size(
+            px(saved.width).max(MIN_WINDOW_SIZE.width),
+            px(saved.height).max(MIN_WINDOW_SIZE.height),
+        ),
+    );
+    if !reaches_a_display(restore, cx) {
+        log::info!(
+            "the session's window position {}x{} at {},{} is on no display; centring instead",
+            saved.width,
+            saved.height,
+            saved.x,
+            saved.y
+        );
+        return centred();
+    }
+
+    if saved.maximized {
+        WindowBounds::Maximized(restore)
+    } else {
+        WindowBounds::Windowed(restore)
+    }
+}
+
+/// The window's bounds as the session stores them.
+///
+/// Read through [`WindowBounds`] rather than the live rect: a maximised window
+/// reports its *restore* rect there — the size it should come back to when it is
+/// un-maximised — while its live rect is the whole screen.
+fn saved_bounds(window: &Window) -> SavedBounds {
+    let bounds = window.window_bounds();
+    let maximized = matches!(bounds, WindowBounds::Maximized(_));
+    let bounds = bounds.get_bounds();
+    SavedBounds {
+        x: bounds.origin.x.as_f32(),
+        y: bounds.origin.y.as_f32(),
+        width: bounds.size.width.as_f32(),
+        height: bounds.size.height.as_f32(),
+        maximized,
+    }
+}
+
+/// Whether enough of `rect` lands on a display to be grabbable.
+///
+/// The title bar is the only part that can be dragged back, so this asks for a
+/// title-bar-sized overlap rather than for any overlap at all: a window whose
+/// bottom-right corner is visible but whose title bar is off the top of the
+/// screen cannot be moved.
+fn reaches_a_display(rect: Bounds<Pixels>, cx: &App) -> bool {
+    cx.displays()
+        .iter()
+        .any(|display| reaches(rect, display.visible_bounds()))
+}
+
+/// Whether `rect` overlaps `area` by enough to grab its title bar.
+fn reaches(rect: Bounds<Pixels>, area: Bounds<Pixels>) -> bool {
+    let overlap = |start: Pixels, length: Pixels, area_start: Pixels, area_length: Pixels| {
+        ((start + length).min(area_start + area_length) - start.max(area_start)).max(px(0.))
+    };
+
+    overlap(
+        rect.origin.y,
+        rect.size.height,
+        area.origin.y,
+        area.size.height,
+    ) >= px(24.)
+        && overlap(
+            rect.origin.x,
+            rect.size.width,
+            area.origin.x,
+            area.size.width,
+        ) >= px(120.)
 }
 
 /// Whether any document has unsaved changes, for the quit guard.
@@ -1113,5 +1243,39 @@ mod tests {
     #[test]
     fn close_others_with_one_tab_closes_nothing() {
         assert!(AppShell::tabs_to_close(1, TabCommand::CloseOthers, 0).is_empty());
+    }
+
+    /// A display that starts at the origin and is `width` by `height`.
+    fn display(width: f32, height: f32) -> Bounds<Pixels> {
+        Bounds::new(point(px(0.), px(0.)), size(px(width), px(height)))
+    }
+
+    #[test]
+    fn a_window_restored_onto_a_display_still_reaches_it() {
+        let window = Bounds::new(point(px(100.), px(100.)), size(px(1200.), px(760.)));
+        assert!(reaches(window, display(1920., 1080.)));
+    }
+
+    #[test]
+    fn a_window_restored_off_the_right_of_every_display_does_not_reach_it() {
+        // The case a monitor that was unplugged leaves behind: the old co-ordinates
+        // are past the right edge of what is left.
+        let window = Bounds::new(point(px(2000.), px(100.)), size(px(1200.), px(760.)));
+        assert!(!reaches(window, display(1920., 1080.)));
+    }
+
+    #[test]
+    fn a_window_with_only_a_corner_on_the_display_does_not_reach_it() {
+        // Forty pixels of the title bar's right end are visible, which is not
+        // enough to grab: the window is mostly off the left edge.
+        let window = Bounds::new(point(px(-1160.), px(100.)), size(px(1200.), px(760.)));
+        assert!(!reaches(window, display(1920., 1080.)));
+    }
+
+    #[test]
+    fn a_window_hanging_off_the_bottom_of_the_display_still_reaches_it() {
+        // The title bar is on screen, so it can be dragged back up.
+        let window = Bounds::new(point(px(100.), px(900.)), size(px(1200.), px(760.)));
+        assert!(reaches(window, display(1920., 1080.)));
     }
 }

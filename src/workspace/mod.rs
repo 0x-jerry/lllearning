@@ -87,7 +87,8 @@ impl Workspace {
         &self.tree
     }
 
-    /// Whether a watcher is running, for the status bar.
+    /// Whether a watcher is running.
+    #[allow(dead_code)]
     pub fn is_watching(&self) -> bool {
         self.watcher.is_some()
     }

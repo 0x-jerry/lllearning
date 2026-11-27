@@ -54,12 +54,11 @@ src/app/              the shell and its chrome
   popup/mod.rs        the owned-window seam: placement, the answer channel, the registry
   popup/dialog.rs     prompts: a question with footer buttons
   popup/contextmenu.rs a list of commands at the pointer
-  status_bar.rs       the footer
   mod.rs              init(): the one place a feature is switched on
 src/panes/            side-pane seam: explorer, browser, outline
 src/documents/        document seam: text, markdown, image, video, refused, sniff
 src/workspace/        folder root, lazy tree, notify watcher, fs helpers
-src/state.rs          the session file
+src/state.rs          the session file, the window's bounds included
 src/logging.rs        the log sink (stdout) and the startup marks
 src/icons.rs          icon glyphs as text: lucide, and the nerd font for file types
 src/tray.rs           tray icon; hide-on-close

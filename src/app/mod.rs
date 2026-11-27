@@ -9,7 +9,6 @@ pub mod documents_view;
 pub mod popup;
 pub mod shell;
 pub mod side_view;
-pub mod status_bar;
 pub mod title_bar;
 
 use gpui::App;
