@@ -4569,6 +4569,7 @@ dependencies = [
  "allsorts",
  "devicons",
  "dirs 6.0.0",
+ "embed-resource",
  "gpui-kit",
  "gpui-rsx",
  "gpui-webview",

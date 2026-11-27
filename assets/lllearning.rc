@@ -1,0 +1,14 @@
+// The executable's own identity: the icon Explorer draws beside the file name,
+// on the taskbar button and in Alt-Tab.
+//
+// Rust has no notion of a Windows resource, so the build script
+// (`build/main.rs`) compiles this into a `.lib` and links it into the binary.
+// Without it the exe carries Rust's default icon, which is what a portable copy
+// shipped: the app looked like something else in its own folder.
+//
+// `icon.ico` is the artwork `assets/build-icon.ts` rasterises from `icon.svg` —
+// the same file the window (`app/title_bar.rs`) and the tray embed — at 16 to
+// 256 pixels, so Explorer has a crisp one at every zoom level. The path is
+// relative to this file, which is how `rc.exe` resolves it.
+
+1 ICON "icon.ico"

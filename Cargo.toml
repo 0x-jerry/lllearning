@@ -10,6 +10,7 @@ inspector = []
 
 [build-dependencies]
 allsorts = { version = "0.17", default-features = false, features = ["flate2", "flate2_rust"] }
+embed-resource = "3.0"
 lucide-icons = "1.80"
 
 [dependencies]

@@ -14,8 +14,13 @@
 //! LTO takes minutes, and re-subsetting on every build would add to it for no
 //! change in output. A changed glyph list counts as a changed input, so adding
 //! an `Icon::Variant` still reaches the font.
+//!
+//! The third call is not about fonts: [`exe_icon`] compiles the executable's own
+//! icon into the link, because cargo has no other way to put a resource in the
+//! binary.
 
 mod devicons;
+mod exe_icon;
 mod font;
 mod lucide;
 
@@ -48,4 +53,6 @@ fn main() {
         &devicons::drawn_glyphs(),
         font::Vendor::NerdFont,
     );
+
+    exe_icon::embed(&manifest);
 }

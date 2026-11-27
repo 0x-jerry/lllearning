@@ -66,10 +66,11 @@ src/tray.rs           tray icon; hide-on-close
 src/window.rs         Win32 hide/show, the owned handle a build crosses awaits with,
                       and owning a prompt window to its caller
 build/                the build script: subsets the icon fonts, one file per font
-  main.rs             what it does and when; the two font calls
+  main.rs             what it does and when; the two font calls and the icon call
   font.rs             crate lookup, subsetting, staleness
   lucide.rs           which lucide glyphs the app draws, scanned out of src/
   devicons.rs         which nerd-font glyphs the file-type table can return
+  exe_icon.rs         the exe's own icon: assets/lllearning.rc compiled into the link
 ```
 
 There is no dock crate in use. The window is two `SideView`s around a
