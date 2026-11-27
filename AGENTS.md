@@ -60,7 +60,7 @@ src/panes/            side-pane seam: explorer, browser, outline
 src/documents/        document seam: text, markdown, image, video, refused, sniff
 src/workspace/        folder root, lazy tree, notify watcher, fs helpers
 src/state.rs          the session file
-src/logging.rs        the stderr log sink and the startup marks
+src/logging.rs        the log sink (stdout) and the startup marks
 src/icons.rs          icon glyphs as text: lucide, and the nerd font for file types
 src/tray.rs           tray icon; hide-on-close
 src/window.rs         Win32 hide/show, and owning a prompt window to its caller
@@ -323,7 +323,7 @@ into a dangling lookup.
 | R8 | Blocking `read_dir`/file reads on the UI thread freeze the app on network drives. | All fs work goes through `cx.background_spawn`; listings are capped at `MAX_DIR_ENTRIES` (5 000). |
 | R9 | Path identity on Windows: drive-letter case, `\\?\` prefixes from `canonicalize`, symlinks. | Normalise once in `fs_util.rs`; compare case-insensitively on Windows. Unit-tested there. |
 | R10 | Editor dirty tracking vs. programmatic `set_value` — restoring a tab would mark it dirty. | Restore with `EditorState::set_value` (no change event) and subscribe to `InputEvent::Change` only. |
-| R11 | Losing unsaved work on quit or on a folder switch. | **Open.** A dirty tab's own close button prompts, but `close_all_documents` (folder switch) and the quit hook discard silently — the hook only counts the dirty files on stderr, because no window is left to ask in. Closing either gap means one prompt that walks the dirty documents before the discard. |
+| R11 | Losing unsaved work on quit or on a folder switch. | **Open.** A dirty tab's own close button prompts, but `close_all_documents` (folder switch) and the quit hook discard silently — the hook only logs the count of dirty files, because no window is left to ask in. Closing either gap means one prompt that walks the dirty documents before the discard. |
 | R12 | A persisted layout from a future or older build, or a pane id that no longer exists. | `SessionState.version` gate (now 2; a version 1 file was the dock's layout and is ignored); an unknown pane id falls back to the slot's first provider; a document that cannot be reopened survives as an `Unavailable` tab; any load error falls back to the default layout. |
 | R13 | Custom title bar drag/close on Windows interacts with the tray "hide on close" guard. | Reuse `tray::keep_window_on_close`; verify the window buttons and that the tray still shows and hides the window. |
 | R14 | Lucide font glyphs: baseline/centring, and a 1 MB TTF in the binary. | Render icons in a fixed-size flex box; fall back to `gpui_kit::assets::IconName` for a single icon if its metrics look off. The 1 MB cost is gone: `build/` subsets both icon fonts to the glyphs the source names. |

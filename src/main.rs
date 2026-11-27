@@ -43,7 +43,7 @@ fn main() {
             app::init(cx);
 
             if let Err(error) = tray::Tray::install(cx) {
-                eprintln!("failed to create the tray icon: {error}");
+                log::error!("failed to create the tray icon: {error}");
             }
             logging::mark("fundation initialized");
 
@@ -68,7 +68,7 @@ fn main() {
             let (_, shell) = match opened {
                 Ok(opened) => opened,
                 Err(error) => {
-                    eprintln!("failed to open the window: {error}");
+                    log::error!("failed to open the window: {error}");
                     return;
                 }
             };

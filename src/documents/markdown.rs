@@ -264,7 +264,7 @@ impl Render for MarkdownView {
                     // A save that fails is reported rather than swallowed: the
                     // tab must not lose its dirty marker on a failed write.
                     if let Err(error) = this.save(window, cx) {
-                        eprintln!("{error}");
+                        log::error!("{error}");
                     }
                 })}
             >

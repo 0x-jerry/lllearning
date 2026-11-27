@@ -180,7 +180,7 @@ impl BrowserView {
                 Some(cx.new(|_| view))
             }
             Err(error) => {
-                eprintln!("failed to create the webview: {error}");
+                log::error!("failed to create the webview: {error}");
                 None
             }
         };

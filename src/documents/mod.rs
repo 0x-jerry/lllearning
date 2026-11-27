@@ -503,7 +503,7 @@ impl DocumentPanel {
         let sniff = match Sniff::of(&path) {
             Ok(sniff) => sniff,
             Err(error) => {
-                eprintln!("could not read {}: {error}", path.display());
+                log::error!("could not read {}: {error}", path.display());
                 return None;
             }
         };

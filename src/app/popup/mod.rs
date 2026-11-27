@@ -132,7 +132,7 @@ where
     match opened {
         Ok(_) => answered,
         Err(error) => {
-            eprintln!("could not open the popup window: {error}");
+            log::error!("could not open the popup window: {error}");
             Task::ready(None)
         }
     }

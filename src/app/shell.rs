@@ -181,15 +181,15 @@ impl AppShell {
     ///
     /// Called once, after the window exists. The save is unconditional — a
     /// session file is a convenience, not user data — but unsaved documents are
-    /// reported on stderr before the app goes, because there is no window left
-    /// to prompt in by the time this runs (risk R11).
+    /// logged before the app goes, because there is no window left to prompt in
+    /// by the time this runs (risk R11).
     pub fn install_quit_hook(&mut self, cx: &mut Context<Self>) {
         // The hook is handed the shell itself. Reading it through a weak handle
         // would re-enter the very `update` that is running the hook, which panics
         // with "cannot read AppShell while it is already being updated".
         let subscription = cx.on_app_quit(|shell: &mut Self, cx| {
             if any_dirty(shell, cx) {
-                eprintln!(
+                log::warn!(
                     "quitting with {} unsaved document(s)",
                     shell
                         .documents()
@@ -280,7 +280,7 @@ impl AppShell {
                 self.sync_disk_changes(paths, window, cx);
             }
             WorkspaceEvent::Error(message) => {
-                eprintln!("workspace: {message}");
+                log::warn!("workspace: {message}");
             }
         }
         cx.notify();
@@ -407,7 +407,7 @@ impl AppShell {
                 // The file or its viewer is gone. The tab is kept rather than
                 // dropped, because the session named it (risk R12).
                 None => {
-                    eprintln!("could not reopen {}", saved.path.display());
+                    log::warn!("could not reopen {}", saved.path.display());
                     self.documents
                         .push(DocumentPanel::missing(saved.path.clone(), cx));
                 }
@@ -469,7 +469,7 @@ impl AppShell {
             cx,
         );
         let Some(panel) = opened else {
-            eprintln!("no viewer can show {}", canonical.display());
+            log::warn!("no viewer can show {}", canonical.display());
             return;
         };
 

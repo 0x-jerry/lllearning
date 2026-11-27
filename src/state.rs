@@ -119,7 +119,7 @@ pub fn load() -> Option<SessionState> {
         Ok(text) => text,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return None,
         Err(error) => {
-            eprintln!("could not read {}: {error}", path.display());
+            log::warn!("could not read {}: {error}", path.display());
             return None;
         }
     };
@@ -127,7 +127,7 @@ pub fn load() -> Option<SessionState> {
     match serde_json::from_str::<SessionState>(&text) {
         Ok(session) if session.is_current() => Some(session),
         Ok(session) => {
-            eprintln!(
+            log::warn!(
                 "ignoring {}: it was written by session version {}, not {SESSION_VERSION}",
                 path.display(),
                 session.version
@@ -135,7 +135,7 @@ pub fn load() -> Option<SessionState> {
             None
         }
         Err(error) => {
-            eprintln!(
+            log::warn!(
                 "ignoring {}: it is not valid JSON ({error})",
                 path.display()
             );
@@ -150,23 +150,23 @@ pub fn load() -> Option<SessionState> {
 /// is not worth interrupting the user for.
 pub fn save(session: &SessionState) {
     let Some(path) = session_path() else {
-        eprintln!("could not locate a config directory for the session file");
+        log::warn!("could not locate a config directory for the session file");
         return;
     };
     if let Some(parent) = path.parent()
         && let Err(error) = std::fs::create_dir_all(parent)
     {
-        eprintln!("could not create {}: {error}", parent.display());
+        log::warn!("could not create {}: {error}", parent.display());
         return;
     }
 
     match serde_json::to_string_pretty(session) {
         Ok(text) => {
             if let Err(error) = std::fs::write(&path, text) {
-                eprintln!("could not write {}: {error}", path.display());
+                log::warn!("could not write {}: {error}", path.display());
             }
         }
-        Err(error) => eprintln!("could not encode the session: {error}"),
+        Err(error) => log::warn!("could not encode the session: {error}"),
     }
 }
 

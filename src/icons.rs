@@ -57,8 +57,8 @@ pub fn install_font(cx: &mut App) {
     for font in [LUCIDE_FONT_BYTES, DEVICONS_FONT_BYTES] {
         if let Err(error) = cx.text_system().add_fonts(vec![Cow::Borrowed(font)]) {
             // A font that fails to load costs every icon in the app, so it is
-            // worth a line on stderr; there is nothing to recover to at startup.
-            eprintln!("failed to install an icon font: {error}");
+            // worth an error; there is nothing to recover to at startup.
+            log::error!("failed to install an icon font: {error}");
         }
     }
 }
