@@ -23,6 +23,10 @@ use crate::{
     panes::{self, PaneSlot},
 };
 
+/// The strip's width, and the width the dock element keeps when its pane is put
+/// away.
+pub(crate) const STRIP_WIDTH: gpui::Pixels = px(36.);
+
 /// What a strip button reports when it is pressed: the provider id.
 type SelectHandler = std::rc::Rc<dyn Fn(&SharedString, &mut Window, &mut App) + 'static>;
 
@@ -117,7 +121,7 @@ impl ActivityBar {
             <div
                 id={SharedString::from(format!("activity-bar-{}", slot_name(slot)))}
                 class="flex flex-col items-center gap-1 py-1"
-                w={px(36.)}
+                w={STRIP_WIDTH}
                 h_full
                 flex_none
                 bg={sidebar}

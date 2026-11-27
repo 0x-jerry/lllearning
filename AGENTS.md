@@ -165,15 +165,18 @@ if you use both.
 by the shell, and the lint cannot see a test-only consumer. Do not "fix" it by
 deleting public seam methods.
 
-**The activity strips sit outside the resizable group, and must stay there.** A
-collapsed dock is `ResizablePanel::visible(false)`, which removes it from the
-layout entirely. Put a strip inside its dock's panel and collapsing the dock
-takes away the only button that reopens it.
+**A closed dock's panel is hidden, and its strip lives in the centre row.** The
+strip is part of its dock's element (`SideView::render`), so hiding the panel
+would hide the only button that reopens it. The shell therefore renders that
+element inside the panel while the dock is open, and as a child of the centre
+panel while it is closed — where `SideView` returns the strip alone. Hiding the
+panel is the point: a panel that is merely clamped to the strip's width keeps a
+divider, and a divider that cannot move anything reads as broken.
 
 **`ResizablePanel::visible(false)` keeps the slot, so panel indices never
-shift.** The left dock is column 0, the centre 1, the right dock 2, and the
-session's saved widths are read by those indices. Never conditionally omit a
-panel element from the group; toggle `visible` instead.
+shift.** The centre is column 1 and the docks are 0 and 2, and the session's
+saved widths are read by those indices. Never conditionally omit a panel element
+from the group; toggle `visible` instead.
 
 **`ResizablePanel::size` is the *initial* size only.** A live drag mutates
 `ResizableState`, not the element. So a saved width reaches the first frame

@@ -69,7 +69,7 @@ pub struct AppShell {
     /// The centre: the document tabs and the document on show.
     documents: DocumentsView,
     /// The two side docks, by slot.
-    sides: HashMap<PaneSlot, SideView>,
+    sides: HashMap<PaneSlot, Entity<SideView>>,
     /// The widths of the three columns, so a drag and a restart agree.
     columns: Entity<ResizableState>,
     /// The file last revealed in the tree.
@@ -222,10 +222,10 @@ impl AppShell {
 
     /// Which provider each side dock is showing.
     #[allow(dead_code)]
-    pub fn active_panes(&self) -> HashMap<PaneSlot, String> {
+    pub fn active_panes(&self, cx: &App) -> HashMap<PaneSlot, String> {
         self.sides
             .iter()
-            .filter_map(|(slot, side)| side.active().map(|id| (*slot, id.to_owned())))
+            .filter_map(|(slot, side)| side.read(cx).active().map(|id| (*slot, id.to_owned())))
             .collect()
     }
 
@@ -320,10 +320,15 @@ impl AppShell {
     }
 
     /// The dock for `slot`, created on first use.
-    fn side(&mut self, slot: PaneSlot, cx: &mut Context<Self>) -> &mut SideView {
-        self.sides
-            .entry(slot)
-            .or_insert_with(|| SideView::new(slot, self.workspace.clone(), cx.weak_entity()))
+    fn side(&mut self, slot: PaneSlot, cx: &mut Context<Self>) -> Entity<SideView> {
+        if let Some(side) = self.sides.get(&slot) {
+            return side.clone();
+        }
+        let workspace = self.workspace.clone();
+        let shell = cx.weak_entity();
+        let side = cx.new(|_| SideView::new(slot, workspace, shell));
+        self.sides.insert(slot, side.clone());
+        side
     }
 
     /// Install the layout a fresh session starts with: the explorer on the left,
@@ -335,15 +340,18 @@ impl AppShell {
                 .first()
                 .map(|provider| provider.id().to_owned());
             let side = self.side(slot, cx);
-            match first {
-                Some(id) => {
-                    side.show(&id, window, cx);
+            side.update(cx, |side, cx| {
+                match &first {
+                    Some(id) => {
+                        side.show(id, window, cx);
+                    }
+                    None => side.apply(&SideState::default(), cx),
                 }
-                None => side.apply(&SideState::default(), cx),
-            }
-            // A closed dock is reopened by its strip, and the strip reads the
-            // active pane, so the pane has to exist before the first frame.
-            side.ensure_active(window, cx);
+                // A closed dock is reopened by its strip, and the strip reads
+                // the active pane, so the pane has to exist before the first
+                // frame.
+                side.ensure_active(window, cx);
+            });
         }
     }
 
@@ -359,7 +367,8 @@ impl AppShell {
                 PaneSlot::Left => &session.left,
                 PaneSlot::Right => &session.right,
             };
-            self.side(slot, cx).apply(saved, cx);
+            self.side(slot, cx)
+                .update(cx, |side, cx| side.apply(saved, cx));
         }
     }
 
@@ -438,7 +447,8 @@ impl AppShell {
                 .await;
             let _ = this.update_in(cx, |this, window, cx| {
                 for slot in PaneSlot::ALL {
-                    this.side(slot, cx).ensure_active(window, cx);
+                    this.side(slot, cx)
+                        .update(cx, |side, cx| side.ensure_active(window, cx));
                 }
                 crate::logging::mark("panes built");
                 cx.notify();
@@ -773,7 +783,8 @@ impl AppShell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if !self.side(slot, cx).show(provider_id, window, cx) {
+        let side = self.side(slot, cx);
+        if !side.update(cx, |side, cx| side.show(provider_id, window, cx)) {
             return;
         }
         self.schedule_session_save(window, cx);
@@ -783,7 +794,8 @@ impl AppShell {
     /// Toggle a side dock open or closed.
     #[allow(dead_code)]
     pub fn toggle_dock(&mut self, slot: PaneSlot, window: &mut Window, cx: &mut Context<Self>) {
-        self.side(slot, cx).toggle(window, cx);
+        self.side(slot, cx)
+            .update(cx, |side, cx| side.toggle(window, cx));
         self.schedule_session_save(window, cx);
         cx.notify();
     }
@@ -791,8 +803,9 @@ impl AppShell {
     /// Whether a side dock is open.
     #[allow(dead_code)]
     pub fn is_dock_open(&self, slot: PaneSlot, cx: &App) -> bool {
-        let _ = cx;
-        self.sides.get(&slot).is_some_and(|side| side.is_open())
+        self.sides
+            .get(&slot)
+            .is_some_and(|side| side.read(cx).is_open())
     }
 
     /// Navigate the browser pane to `url`.
@@ -884,7 +897,7 @@ impl AppShell {
             .map(|size| size.as_f32())
             .filter(|width| *width > 1.);
         match self.sides.get(&slot) {
-            Some(side) => side.state(width),
+            Some(side) => side.read(cx).state(width),
             None => SideState::default(),
         }
     }
@@ -903,15 +916,19 @@ impl AppShell {
             .get(ix)
             .copied()
             .filter(|size| *size > px(1.))
-            .or_else(|| self.sides.get(&slot).and_then(|side| side.saved_width()))
+            .or_else(|| {
+                self.sides
+                    .get(&slot)
+                    .and_then(|side| side.read(cx).saved_width())
+            })
             .unwrap_or(fallback)
     }
 }
 
 /// A framed area of the window: an optional header strip above a body.
 ///
-/// The side docks and the centre are the same shape, which is why they share
-/// this rather than each drawing their own frame.
+/// The document centre draws through this; each dock draws its own frame in its
+/// `Render`, strip included.
 pub(crate) fn frame(
     id: &'static str,
     header: Option<AnyElement>,
@@ -957,20 +974,20 @@ impl Render for AppShell {
         // Cheap after the first call; that one arms the first-paint mark.
         crate::logging::arm_first_paint(window);
 
-        // Widths first: reading them borrows the shell immutably, and `side`
-        // below hands out a mutable borrow of the dock.
+        // The docks exist before their widths are read: a dock that has not
+        // been created yet would read as collapsed.
+        let left = self.side(PaneSlot::Left, cx);
+        let right = self.side(PaneSlot::Right, cx);
+
         let left_width = self.column_size(PaneSlot::Left, 0, LEFT_WIDTH, cx);
         let right_width = self.column_size(PaneSlot::Right, 2, RIGHT_WIDTH, cx);
 
-        let left = self.side(PaneSlot::Left, cx);
-        let left_strip = left.render_strip(cx);
-        let left_open = left.is_open();
-        let left_content = left.render_content(cx);
-
-        let right = self.side(PaneSlot::Right, cx);
-        let right_strip = right.render_strip(cx);
-        let right_open = right.is_open();
-        let right_content = right.render_content(cx);
+        // A closed dock's panel is hidden rather than clamped: a visible panel
+        // next to a strip still draws a divider, and a divider that cannot move
+        // anything is worse than none. The strip is drawn by the dock itself and
+        // re-parented into the centre row below, so it stays clickable.
+        let left_open = left.read(cx).is_open();
+        let right_open = right.read(cx).is_open();
 
         let documents = self.documents.render(
             cx.listener(|this: &mut AppShell, ix: &usize, window, cx| {
@@ -1022,7 +1039,6 @@ impl Render for AppShell {
             >
                 {title}
                 <div class="flex flex-row flex-1 min-h-0 items-stretch">
-                    {left_strip}
                     <div class="flex-1 min-w-0">
                         <h_resizable("workspace-columns") with_state={&columns}>
                             <resizable_panel
@@ -1031,10 +1047,14 @@ impl Render for AppShell {
                                 size_range={LEFT_RANGE}
                                 flex_none
                             >
-                                {left_content}
+                                {left.clone()}
                             </resizable_panel>
                             <resizable_panel>
-                                {documents}
+                                <div class="flex flex-row size-full min-h-0 items-stretch">
+                                    {...(!left_open).then(|| left.clone()).into_iter()}
+                                    <div class="flex-1 min-w-0 min-h-0">{documents}</div>
+                                    {...(!right_open).then(|| right.clone()).into_iter()}
+                                </div>
                             </resizable_panel>
                             <resizable_panel
                                 base={resizable_panel().visible(right_open)}
@@ -1042,11 +1062,10 @@ impl Render for AppShell {
                                 size_range={RIGHT_RANGE}
                                 flex_none
                             >
-                                {right_content}
+                                {right.clone()}
                             </resizable_panel>
                         </h_resizable>
                     </div>
-                    {right_strip}
                 </div>
                 {status}
             </div>

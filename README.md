@@ -61,7 +61,9 @@ Rust on [GPUI Kit](https://gpui-kit.com), with the UI written in
 (`src/workspace/`) — so adding a pane or a viewer is one new module plus one
 `register_*` line, with no edit under `src/app/`. The window itself is two
 activity strips around an `h_resizable` group of three panels (left dock,
-document tabs, right dock); there is no dock crate involved.
+document tabs, right dock); there is no dock crate involved. A dock's strip is
+part of the dock: closing one hides its panel and leaves the strip at the edge
+of the centre.
 
 Editing `assets/icon.svg` means regenerating the rasters with `bun install` then
 `bun run build:icon`. The two icon fonts need no such step: `build/` subsets
