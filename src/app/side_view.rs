@@ -1,15 +1,6 @@
-//! One side dock: the activity strip beside it, and the pane it is showing.
-//!
-//! The strip and the content are one thing because they answer one question —
-//! which pane is in this dock, and is the dock open. Splitting them would mean
-//! two copies of that answer, so [`Render`] draws both: the strip at the edge
-//! the slot names, and the pane beside it. A closed dock renders the strip
-//! alone, and the shell moves that element out of the hidden panel into the
-//! centre row so the strip stays on screen (see `AGENTS.md`).
-//!
-//! Panes are built once and kept. Rebuilding on every switch would recreate the
-//! browser's WebView2 — slow, and it re-arms the profile lock (risk R2) — and
-//! would throw away the explorer's expansion state.
+//! One side dock: the activity strip beside it and the pane it shows.
+//! Panes are built once and kept, so switching does not restart a WebView2 or
+//! lose the explorer's expansion state.
 
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -28,16 +19,13 @@ use crate::{
     workspace::Workspace,
 };
 
-/// A pane the dock has built, whether or not it is the one on show.
+/// A pane the dock has built, whether or not it is on show.
 struct MountedPane {
     view: AnyView,
-    /// What the dock asks for the pane's state, and hands it back on the build
-    /// after a restore.
     controller: Rc<dyn PaneController>,
-    /// What to call when the pane leaves or re-enters the screen. The browser
-    /// uses it to hide its page (risk R1b).
+    /// What to call when the pane leaves or re-enters the screen; the browser
+    /// uses it to hide its page.
     activation: Option<Activation>,
-    /// Whether the pane is the one the dock is showing.
     active: bool,
 }
 
@@ -59,22 +47,17 @@ pub struct SideView {
     /// The provider id the dock is showing.
     active: Option<String>,
     open: bool,
-    /// Every pane built for this dock, by provider id.
     panes: HashMap<String, MountedPane>,
-    /// The state the session saved, and the pane id it belongs to.
-    ///
-    /// Kept here rather than handed straight to the build because the pane is
-    /// built later — after the first frame, or when a collapsed dock reopens —
-    /// and because a dock that is still collapsed has to keep it for the
-    /// session write it never built a pane for.
+    /// The state the session saved, with the pane id it belongs to. Kept here
+    /// because the pane is built later, or never while the dock stays closed.
     saved_state: Option<(String, ViewState)>,
     workspace: Entity<Workspace>,
     shell: gpui::WeakEntity<crate::app::shell::AppShell>,
 }
 
 impl SideView {
-    /// A dock for `slot`, showing nothing until [`Self::apply`] or
-    /// [`Self::show`] says otherwise.
+    /// A dock that shows nothing until [`Self::apply`] or [`Self::show`] says
+    /// otherwise.
     pub fn new(
         slot: PaneSlot,
         workspace: Entity<Workspace>,
@@ -91,8 +74,7 @@ impl SideView {
         }
     }
 
-    /// Whether the dock is open. A closed dock draws no content, and its strip
-    /// marks no pane as selected.
+    /// Whether the dock is open.
     pub fn is_open(&self) -> bool {
         self.open
     }
@@ -116,9 +98,7 @@ impl SideView {
         });
 
         self.open = saved.open && id.is_some();
-        // Only for the pane the state was written by: a dock whose saved id
-        // this build lost falls back to its first pane, which knows nothing
-        // about what the missing one kept.
+        // Only for the pane that wrote it: another pane would restore the wrong thing.
         self.saved_state = match (&id, saved.active.as_deref()) {
             (Some(id), Some(saved_id)) if id == saved_id => {
                 saved.state.clone().map(|state| (id.clone(), state))
@@ -129,13 +109,9 @@ impl SideView {
         cx.notify();
     }
 
-    /// Show `provider_id`, or collapse the dock if it is already showing it.
-    ///
-    /// Returns whether anything changed, so the caller knows whether the
-    /// session is worth rewriting.
+    /// Show `provider_id`, or collapse the dock if it already shows it. Returns
+    /// whether anything changed.
     pub fn show(&mut self, provider_id: &str, window: &mut Window, cx: &mut Context<Self>) -> bool {
-        // Pressing the button of the pane on show means "put that away", which
-        // is the only collapse affordance the strip has.
         if self.open && self.active() == Some(provider_id) {
             self.set_open(false, window, cx);
             return true;
@@ -160,19 +136,16 @@ impl SideView {
     fn set_open(&mut self, open: bool, window: &mut Window, cx: &mut Context<Self>) {
         self.open = open;
         if open {
-            // A toggle opens a dock whose pane a collapsed dock never built.
             self.ensure_active(window, cx);
         }
         self.activate(window, cx);
         cx.notify();
     }
 
-    /// Build the pane on show if it is not built already, so a closed dock can
-    /// be reopened and a restored one has something to draw.
+    /// Build the pane on show if it is not built already.
     ///
-    /// A collapsed dock builds nothing: its strip names a pane it is not
-    /// showing, and building one is expensive — the browser's WebView2 starts a
-    /// browser process.
+    /// A collapsed dock builds nothing: the browser's WebView2 starts a browser
+    /// process.
     pub fn ensure_active(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !self.open {
             return;
@@ -199,16 +172,13 @@ impl SideView {
             window,
             cx,
         );
-        // What the session saved for this pane, if it was this pane that saved
-        // it: a dock shows several over its lifetime, and handing one another's
-        // state would restore the wrong thing.
+        // What the session saved for this pane, if it was this pane that saved it.
         if let Some((saved_id, state)) = &self.saved_state
             && saved_id == provider_id
         {
             content.controller.restore_view_state(state, window, cx);
         }
-        // Built off screen, so a pane whose contents can leave the screen starts
-        // hidden and the next transition shows it.
+        // Built off screen, so it starts hidden and the next transition shows it.
         self.panes.insert(
             provider_id.to_owned(),
             MountedPane {
@@ -221,10 +191,8 @@ impl SideView {
         cx.notify();
     }
 
-    /// Tell every pane that changed whether it is the one on screen.
-    ///
-    /// Only transitions are reported, never every frame, so a pane's own render
-    /// stays the authority on what it draws.
+    /// Tell every pane that changed whether it is the one on screen. Only
+    /// transitions are reported, never every frame.
     fn activate(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let active = self.open.then(|| self.active.clone()).flatten();
         for (id, pane) in self.panes.iter_mut() {
@@ -234,9 +202,8 @@ impl SideView {
 
     /// This dock's state, for the session file.
     ///
-    /// `width` is the width the shell last saw the columns laid out at: the
-    /// group measures the dock, so the dock itself has none to report, and a
-    /// hidden panel measures nothing at all.
+    /// `width` comes from the shell: the group measures the dock, and a hidden
+    /// panel measures nothing.
     pub fn state(&self, width: Option<f32>, cx: &App) -> SideState {
         SideState {
             active: self.active.clone(),
@@ -246,11 +213,8 @@ impl SideView {
         }
     }
 
-    /// The state of the pane on show.
-    ///
-    /// A pane that was never built — the dock is collapsed, so it builds
-    /// nothing (risk R22) — has no view to ask, and the state it came in with is
-    /// still the only answer there is.
+    /// The state of the pane on show. A pane the dock never built has no view
+    /// to ask, so the state it came in with is the answer.
     fn pane_state(&self, cx: &App) -> Option<ViewState> {
         let active = self.active.as_ref()?;
         match self.panes.get(active) {
@@ -265,9 +229,7 @@ impl SideView {
 
     /// The strip that toggles this dock and switches its pane.
     fn strip(&self, cx: &mut App) -> AnyElement {
-        // A collapsed dock shows no pane, so its strip must not mark one as
-        // selected -- otherwise the button would read as active while the pane
-        // it names is hidden.
+        // A collapsed dock shows no pane, so its strip marks none as selected.
         let shown = self.open.then(|| self.active.clone()).flatten();
         let providers = panes::panes_for(cx, self.slot);
         let border = cx.theme().border;
@@ -286,10 +248,8 @@ impl SideView {
 
 impl Render for SideView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        // A collapsed dock is the strip alone. The shell places that element at
-        // the edge of the centre row instead of inside the dock's own panel, so
-        // the button that reopens the dock survives its panel being hidden --
-        // and a hidden panel is what removes the divider beside it.
+        // The shell places a collapsed dock's strip in the centre row instead,
+        // so the button that reopens it survives its panel being hidden.
         let strip = self.strip(cx);
         if !self.open {
             return strip;
@@ -305,8 +265,7 @@ impl Render for SideView {
             None => empty_state("No pane", "Pick one in the strip.", cx),
         };
 
-        // The strip goes on the edge the slot names, so the two docks read as
-        // one window frame: left bar, content, right bar.
+        // Left bar, content, right bar.
         let mut strip = Some(strip);
         let mut row: Vec<AnyElement> = Vec::with_capacity(2);
         if self.slot == PaneSlot::Left {

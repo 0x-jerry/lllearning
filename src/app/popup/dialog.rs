@@ -1,13 +1,8 @@
-//! A prompt: a question with footer buttons.
+//! A prompt: a question with footer buttons, in its own window because a dialog
+//! drawn into the main window is covered by the browser pane.
 //!
-//! Its own window rather than `window.open_dialog`, because a dialog drawn into
-//! the main window is covered by the browser pane's native child window (risk
-//! R1, risk R17). [`open`] resolves with the action the user chose; `None` means
-//! it was dismissed.
-//!
-//! The window has no OS caption. Its title row is drawn here and doubles as the
-//! drag handle, and the window controls it offers are [`WindowButtons`] — a
-//! prompt that must be answered can hide all three.
+//! The window has no OS caption: the title row is drawn here and doubles as the
+//! drag handle, and the controls it offers are [`WindowButtons`].
 
 use gpui::component::{
     ActiveTheme as _, IconName, Sizable as _,
@@ -28,7 +23,7 @@ use crate::window;
 gpui::actions!(lllearning, [DismissDialog, ConfirmDialog]);
 
 /// Key context the prompt's root element claims, so Escape and Enter reach it
-/// and nothing in the owner window can take them first.
+/// and nothing in the owner window takes them first.
 const CONTEXT: &str = "DialogWindow";
 
 /// Bind Escape and Enter for every prompt.
@@ -44,8 +39,7 @@ pub fn init(cx: &mut App) {
 pub struct WindowButtons {
     pub minimize: bool,
     pub maximize: bool,
-    /// Draws the close button and makes Escape dismiss the prompt. Without it
-    /// the prompt is a choice the user has to make with a footer button.
+    /// Draws the close button and makes Escape dismiss the prompt.
     pub close: bool,
 }
 
@@ -69,8 +63,6 @@ impl WindowButtons {
     }
 
     /// No controls: the prompt is answered only through its footer buttons.
-    ///
-    /// Not used by the prompts this build ships, which all offer a close button.
     #[allow(dead_code)]
     pub const fn none() -> Self {
         Self {
@@ -97,7 +89,7 @@ pub struct DialogOptions {
     /// Keep the prompt out of the taskbar and Alt-Tab, tied to its owner.
     pub owned: bool,
     pub buttons: WindowButtons,
-    /// The window size; it opens centred on the owner.
+    /// The window opens centred on the owner.
     pub size: Size<Pixels>,
 }
 
@@ -125,9 +117,7 @@ pub struct DialogAction<T> {
 }
 
 /// Open a prompt owned by `owner` and resolve with the action the user chose.
-///
-/// See [`super::open`] for the calling rules: not from inside a draw, and keep
-/// the returned task alive.
+/// `None` means it was dismissed.
 pub fn open<T: Clone + 'static>(
     owner: &Window,
     cx: &mut App,
@@ -159,9 +149,8 @@ pub fn open<T: Clone + 'static>(
     })
 }
 
-/// A one-button message box, for reporting something the user has to see.
-///
-/// Deferred, so it is safe to call from inside an update — a failed save does.
+/// A one-button message box. Deferred, so it is safe to call from inside an
+/// update — a failed save does.
 pub fn alert(owner: &Window, cx: &mut App, title: &str, message: impl Into<SharedString>) {
     let owner = owner.window_handle();
     let title = SharedString::from(title.to_owned());
@@ -231,8 +220,7 @@ impl<T: Clone + 'static> DialogView<T> {
                     id="dialog-drag"
                     class="flex flex-1 min-w-0 h-full items-center px-3"
                     // On Windows the platform hit-tests this area and moves the
-                    // window itself; `start_window_move` is the same gesture
-                    // everywhere else.
+                    // window itself; elsewhere this is the same gesture.
                     window_control_area={WindowControlArea::Drag}
                     on_mouse_down={(MouseButton::Left, |_, window, _| window.start_window_move())}
                 >
@@ -329,9 +317,8 @@ impl<T: Clone + 'static> Popup for DialogView<T> {
                 self.size,
             ))),
             window_min_size: None,
-            // Windows takes its ownership from the Win32 call the host makes,
-            // which can name the actual owner; everywhere else the platform's own
-            // dialog kind does the right thing.
+            // Windows takes its ownership from the Win32 call the host makes;
+            // elsewhere the platform's own dialog kind does it.
             kind: if cfg!(target_os = "windows") {
                 WindowKind::Normal
             } else {
@@ -355,9 +342,7 @@ impl<T: Clone + 'static> Popup for DialogView<T> {
         let focus = cx.focus_handle();
         self.focus = Some(focus.clone());
         // A modal owner cannot be clicked, so a prompt minimized behind it would
-        // lock the app: restoring the prompt is the only way back, and its
-        // taskbar button may not be there. It therefore comes back with its
-        // owner instead.
+        // lock the app: it comes back with its owner instead.
         let modal = self.host.modal();
         self._visibility = Some(
             window.observe_window_visibility(move |visibility, window, _| {
@@ -371,9 +356,6 @@ impl<T: Clone + 'static> Popup for DialogView<T> {
 }
 
 /// The value Enter activates: the first action marked primary.
-///
-/// A prompt with none is answered only by a click, which is why the close button
-/// and Escape exist — they are what a keyboard-only user gets instead.
 fn primary_value<T: Clone>(actions: &[DialogAction<T>]) -> Option<T> {
     actions
         .iter()

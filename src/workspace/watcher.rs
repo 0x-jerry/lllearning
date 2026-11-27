@@ -1,10 +1,6 @@
-//! Filesystem watching.
-//!
-//! `notify` reports every write, rename and removal under a root, often several
-//! per logical change (Windows emits a rename pair for one save; editors write
-//! to a temp file and move it into place). This module turns that stream into
-//! one batched, deduplicated, debounced event so the UI updates once per user
-//! action instead of once per syscall (risk R7).
+//! Filesystem watching. `notify` emits several events per logical change (a
+//! rename pair for one save, temp-file writes); this turns that stream into one
+//! deduplicated, debounced batch.
 
 use std::{
     collections::BTreeSet,
@@ -16,48 +12,34 @@ use gpui::base::async_util::{Receiver, unbounded};
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher as _};
 
 /// How long to wait for the stream to go quiet before reporting a batch.
-///
-/// Long enough to swallow a rename pair and an editor's write-then-move, short
-/// enough that a file created from another program appears "immediately".
+/// Long enough to swallow a rename pair, short enough to feel immediate.
 const DEBOUNCE: Duration = Duration::from_millis(250);
 
-/// A running recursive watcher.
-///
-/// Dropping this stops watching: the callback channel's sender lives in the
-/// watcher, and dropping it closes the receiver the drain task is waiting on.
+/// A running recursive watcher. Dropping this stops watching, which closes the
+/// receiver the drain task waits on.
 pub struct FileWatcher {
-    // Held only to keep the watch alive. `notify` stops watching when the
-    // watcher is dropped, which is exactly the lifetime this struct has.
     _inner: RecommendedWatcher,
 }
 
 impl FileWatcher {
-    /// Watch `root` recursively.
-    ///
-    /// Returns the watcher, which must be kept alive, and the channel its
-    /// batches arrive on. Every batch is deduplicated and sorted, so the caller
-    /// can treat it as "these paths changed" without ordering concerns.
+    /// Watch `root` recursively. Every batch is deduplicated and sorted.
     pub fn start(root: PathBuf) -> notify::Result<(Self, Receiver<Vec<PathBuf>>)> {
         let (raw_tx, raw_rx) = std::sync::mpsc::channel::<notify::Result<Event>>();
 
         let mut inner = notify::recommended_watcher(move |event: notify::Result<Event>| {
-            // A send failure means the app is shutting down; the watcher is
-            // about to be dropped, so the error needs no handling.
+            // A send failure means the app is shutting down.
             let _ = raw_tx.send(event);
         })?;
         inner.watch(&root, RecursiveMode::Recursive)?;
 
         let (batch_tx, batch_rx) = unbounded::<Vec<PathBuf>>();
 
-        // The debounce runs on its own thread rather than a GPUI task: it is a
-        // blocking loop over a std channel, and it must keep draining while the
-        // UI thread is busy rendering.
+        // On its own thread rather than a GPUI task: a blocking loop over a std
+        // channel must keep draining while the UI thread renders.
         std::thread::Builder::new()
             .name("lllearning-watch".to_owned())
             .spawn(move || {
                 let mut pending = BTreeSet::new();
-                // Block for the first event of a batch; once one arrives, keep
-                // collecting until the stream is quiet for DEBOUNCE.
                 while let Ok(event) = raw_rx.recv() {
                     collect(event, &mut pending);
                     loop {

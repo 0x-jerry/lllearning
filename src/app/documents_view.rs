@@ -1,12 +1,4 @@
 //! The centre: the document tabs and the document on show.
-//!
-//! The strip and the view are one thing because a tab and the document it names
-//! are the same index — a close button that had to look its document up by path
-//! would be a second source of truth for "which tab is this".
-//!
-//! Which tab is on show lives here rather than in the shell: nothing outside the
-//! centre selects a tab, and the shell only needs to know which document is
-//! active, which it asks for.
 
 use std::cell::Cell;
 
@@ -33,11 +25,9 @@ pub struct DocumentsView {
     documents: Vec<Entity<DocumentPanel>>,
     /// The index in `documents` the centre is showing.
     active: Option<usize>,
-    /// The strip's scroll position.
     scroll: ScrollHandle,
-    /// The tab the strip last scrolled to. Kept so the strip moves when the
-    /// selection changes and not on every frame -- otherwise scrolling away from
-    /// the active tab would be undone by the next render.
+    /// The tab the strip last scrolled to, so scrolling away from the active tab
+    /// is not undone by the next render.
     shown: Cell<Option<usize>>,
 }
 
@@ -96,10 +86,7 @@ impl DocumentsView {
             .or_else(|| (!self.documents.is_empty()).then_some(0));
     }
 
-    /// Drop a document's tab, and pick the tab that replaces it.
-    ///
-    /// Returns the document that is now on show, so the caller can focus it and
-    /// bring it into view in the tree.
+    /// Drop a document's tab and pick the tab that replaces it.
     pub fn remove(&mut self, document: &Entity<DocumentPanel>) -> Option<Entity<DocumentPanel>> {
         let ix = self.documents.iter().position(|open| open == document)?;
         self.documents.remove(ix);
@@ -107,12 +94,9 @@ impl DocumentsView {
         self.active()
     }
 
-    /// The centre, framed with its tab strip.
-    ///
-    /// `on_select`, `on_close` and `on_menu` are the shell's: selecting focuses
-    /// the editor and reveals the file in the tree, closing may have to prompt
-    /// for unsaved work, and the menu's commands act on every tab — none of that
-    /// belongs to a view that knows no shell.
+    /// The centre, framed with its tab strip. The callbacks are the shell's:
+    /// selecting focuses the editor and reveals the file, closing may prompt
+    /// for unsaved work, and the menu acts on every tab.
     pub fn render(
         &self,
         on_select: impl Fn(&usize, &mut Window, &mut App) + 'static,
@@ -162,9 +146,8 @@ impl DocumentsView {
                 let title = document.read(cx).tab_title(cx);
                 let close_id = SharedString::from(format!("document-close-{ix}"));
 
-                // The button keeps its space while hidden -- `invisible` paints
-                // nothing but still lays out -- so a tab does not change width
-                // when the pointer enters it.
+                // `invisible` paints nothing but still lays out, so a tab does
+                // not change width when the pointer enters it.
                 let close_button = rsx! {
                     <div class="invisible" group_hover={(group.clone(), |this| this.visible())}>
                         <Button(close_id)
@@ -173,7 +156,6 @@ impl DocumentsView {
                             custom={close_variant}
                             tab_stop={false}
                             onClick={move |_, window, cx| {
-                                // Closing must not also select the tab.
                                 cx.stop_propagation();
                                 close(&ix, window, cx);
                             }}
@@ -181,10 +163,8 @@ impl DocumentsView {
                     </div>
                 };
 
-                // The right-click goes on the tab itself, not on a child or a
-                // wrapper: `TabBar` keys its children by position, so a wrapper
-                // would stop it indexing them, and a child never sees the
-                // pointer — the tab's own handler sits outside its children.
+                // The right-click goes on the tab itself: `TabBar` keys its
+                // children by position, so a wrapper breaks the indexing.
                 rsx! {
                     <Tab
                         base={Tab::new()}
@@ -229,11 +209,7 @@ fn close_button_variant(cx: &App) -> ButtonCustomVariant {
         .active(*theme.tokens.secondary_active)
 }
 
-/// Which document the centre should show after the one at `removed` closed, out
-/// of `remaining` left.
-///
-/// The tab that takes its place is the one that slid into its index; when the
-/// last tab closed there is nothing left to show.
+/// Which document the centre shows after the one at `removed` closed.
 fn next_active(removed: usize, remaining: usize) -> Option<usize> {
     (remaining > 0).then(|| removed.min(remaining - 1))
 }

@@ -1,8 +1,5 @@
-//! Showing and hiding the app window.
-//!
-//! GPUI exposes minimizing but not hiding, so closing to the tray would leave a
-//! taskbar entry behind. The platform calls below hide the window outright, and
-//! bring it back to the front when the tray asks for it.
+//! Showing and hiding the app window. GPUI exposes minimizing but not hiding,
+//! so closing to the tray would leave a taskbar entry behind.
 
 use gpui::{AsyncApp, Window};
 
@@ -20,10 +17,9 @@ pub(crate) fn show(window: &mut Window) {
     // SAFETY: the handle belongs to this window and stays alive while it is used.
     unsafe {
         ShowWindow(hwnd, SW_SHOW);
-        // Showing a hidden window restores the z-order it had when it was hidden,
-        // which is usually behind whatever the user moved on to. Passing through
-        // the topmost band raises it above the other windows, and unlike
-        // `SetForegroundWindow` alone it does not need foreground rights.
+        // Showing a hidden window restores the z-order it had when it was hidden.
+        // Passing through the topmost band raises it without needing foreground
+        // rights.
         SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
         SetWindowPos(
             hwnd,
@@ -81,13 +77,8 @@ pub(crate) fn show_first(cx: &mut AsyncApp) {
 }
 
 /// The app window's handle as an owned value, for work that has to cross an
-/// `await`.
-///
-/// A GPUI foreground task cannot hold a `&Window` between await points — the
-/// window is only readable inside `AsyncWindowContext::update` — and wry's
-/// asynchronous build borrows its parent for the whole build. Copying the raw
-/// handle out once is what lets the browser pane start its page without
-/// blocking the render thread (risk R21).
+/// `await`: a foreground task cannot hold a `&Window` between await points, and
+/// wry's asynchronous build borrows its parent for the whole build.
 #[cfg(target_os = "windows")]
 #[derive(Clone, Copy)]
 pub(crate) struct ParentWindow(raw_window_handle::Win32WindowHandle);
@@ -114,9 +105,9 @@ impl raw_window_handle::HasWindowHandle for ParentWindow {
     fn window_handle(
         &self,
     ) -> Result<raw_window_handle::WindowHandle<'_>, raw_window_handle::HandleError> {
-        // SAFETY: the handle belongs to a window that outlives this value. The
+        // SAFETY: the handle belongs to a window that outlives this value: the
         // only holder is the browser pane's build task, and the pane lives in
-        // that window's element tree.
+        // that window's tree.
         Ok(unsafe {
             raw_window_handle::WindowHandle::borrow_raw(raw_window_handle::RawWindowHandle::Win32(
                 self.0,
@@ -131,11 +122,8 @@ pub(crate) fn owner_of(window: &Window) -> Option<isize> {
 }
 
 /// Make a prompt window owned by `owner`, and optionally take the owner's input.
-///
-/// GPUI's `WindowKind::Dialog` cannot do this: it adopts whatever window is
-/// active at creation time, and it also sets `WS_EX_APPWINDOW`, so the prompt
-/// gets a taskbar button. Adopting after the fact names the right owner and
-/// trades the taskbar entry for a tool window, which is what a prompt should be.
+/// `WindowKind::Dialog` cannot: it adopts the active window and sets
+/// `WS_EX_APPWINDOW`, so the prompt gets a taskbar button.
 #[cfg(target_os = "windows")]
 pub(crate) fn adopt_owner(window: &mut Window, owner: Option<isize>, modal: bool) {
     use windows_sys::Win32::UI::Input::KeyboardAndMouse::EnableWindow;
@@ -151,13 +139,11 @@ pub(crate) fn adopt_owner(window: &mut Window, owner: Option<isize>, modal: bool
     // SAFETY: both handles were obtained from live windows and are used only to
     // set styles and enable state, not to dereference.
     unsafe {
-        // The platform has already shown the window by now, and a window created
-        // as `Normal` was born with `WS_EX_APPWINDOW` and no owner, so it has a
-        // taskbar button. Taking that style away while the window is visible
-        // leaves the button behind: Windows only re-reads a window's taskbar
-        // eligibility when it is hidden and shown again. Nothing has painted yet,
-        // so this is not a flicker. A window born as `PopUp` is already a tool
-        // window, and hiding it there would cost a deactivation for nothing.
+        // A window created as `Normal` was born with `WS_EX_APPWINDOW` and no
+        // owner, so it already has a taskbar button. Clearing the style on a
+        // visible window leaves the button: Windows re-reads taskbar eligibility
+        // only on a hide/show round trip. A window born as `PopUp` is already a
+        // tool window, and hiding it would cost a deactivation for nothing.
         let style = GetWindowLongPtrW(hwnd, GWL_EXSTYLE) as u32;
         let tool_window = style & WS_EX_TOOLWINDOW != 0;
         if !tool_window {
@@ -175,7 +161,7 @@ pub(crate) fn adopt_owner(window: &mut Window, owner: Option<isize>, modal: bool
             SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED,
         );
         // The owner is set through the parent slot, which for a window without
-        // `WS_CHILD` means "owned by" rather than "contained in".
+        // `WS_CHILD` means "owned by".
         SetWindowLongPtrW(hwnd, GWLP_HWNDPARENT, owner);
         if !tool_window {
             ShowWindow(hwnd, SW_SHOW);
@@ -201,8 +187,8 @@ pub(crate) fn release_owner(owner: Option<isize>, modal: bool) {
         if IsWindow(owner as _) == 0 {
             return;
         }
-        // Only a modal prompt disabled it, and re-enabling a window that was
-        // never disabled would override a disable the owner set itself.
+        // Only a modal prompt disabled it; re-enabling would override a disable
+        // the owner set itself.
         if modal {
             EnableWindow(owner as _, 1);
         }
@@ -216,10 +202,8 @@ pub(crate) fn adopt_owner(_window: &mut Window, _owner: Option<isize>, _modal: b
 #[cfg(not(target_os = "windows"))]
 pub(crate) fn release_owner(_owner: Option<isize>, _modal: bool) {}
 
-/// Hide the app's window, leaving the app running in the tray.
-///
-/// The prompt windows it owns go with it: they are owned on the platform but
-/// nothing takes them off the screen when the owner is hidden.
+/// Hide the app's window, leaving the app in the tray. The prompt windows it
+/// owns go with it: nothing takes them off screen when the owner is hidden.
 pub(crate) fn hide_first(cx: &mut AsyncApp) {
     let Some(handle) = cx.update(|cx| cx.windows().into_iter().next()) else {
         return;
@@ -232,9 +216,8 @@ pub(crate) fn hide_first(cx: &mut AsyncApp) {
 
 /// Run `f` on the app's window, or do nothing when there is none.
 ///
-/// Not `active_window()`: a hidden or unfocused window is not the platform's
-/// active one, and the tray acts on exactly those. The app's own window list does
-/// not depend on focus or visibility.
+/// Not `active_window()`: a hidden window is not the platform's active one, and
+/// the tray acts on exactly those.
 fn with_window(cx: &mut AsyncApp, f: impl FnOnce(&mut Window)) {
     let Some(handle) = cx.update(|cx| cx.windows().into_iter().next()) else {
         return;

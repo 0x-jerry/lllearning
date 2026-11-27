@@ -1,9 +1,6 @@
-//! The markdown viewer: an editor on the left, a rendered preview on the right,
-//! and a toggle between editor-only and split.
-//!
-//! The preview reuses the editor's text, so there is one buffer and one save
-//! path — the same dirty tracking as the text viewer. The bottom edge is the
-//! shared status bar, with the layout switch as one of its right-hand items.
+//! The markdown viewer: an editor, a rendered preview, and a switch between the
+//! two layouts. The preview reuses the editor's text, so there is one buffer and
+//! one save path.
 
 use std::{
     path::{Path, PathBuf},
@@ -127,8 +124,6 @@ impl DocumentController for MarkdownController {
     }
 
     fn view_state(&self, cx: &App) -> Option<super::ViewState> {
-        // A state that cannot be encoded is a wiring bug, not something the
-        // user did: log it and let the tab reopen at its defaults next time.
         let view = self.view.read(cx);
         match serde_json::to_value(MarkdownViewState {
             layout: view.layout,
@@ -144,8 +139,7 @@ impl DocumentController for MarkdownController {
     }
 
     fn restore_view_state(&self, state: &super::ViewState, window: &mut Window, cx: &mut App) {
-        // A value this build does not understand leaves the default in place
-        // rather than failing the open (risk R12).
+        // A value this build does not understand leaves the defaults in place.
         let Ok(state) = serde_json::from_value::<MarkdownViewState>(state.clone()) else {
             return;
         };
@@ -154,16 +148,11 @@ impl DocumentController for MarkdownController {
             view.wrap = state.wrap.unwrap_or(true);
             view.editor.update(cx, |editor, cx| {
                 editor.set_soft_wrap(view.wrap, window, cx);
-                // Moving the caret is not an edit: `set_cursor_position` emits
-                // no change, so a restored tab is not born dirty (risk R10).
-                // It also focuses the editor, which the shell corrects by
-                // focusing the active tab once every document is restored.
+                // Moving the caret is not an edit, so a restored tab stays clean.
                 if let Some(position) = state.cursor {
                     editor.set_cursor_position(position, window, cx);
                 }
             });
-            // The caret moved under the status bar's feet, so the position it
-            // redraws from is taken again rather than left behind.
             view.last_cursor = view.editor.read(cx).cursor_position();
             cx.notify();
         });
@@ -175,8 +164,7 @@ impl DocumentController for MarkdownController {
     }
 
     fn outline(&self, cx: &App) -> Option<Vec<super::OutlineEntry>> {
-        // Read from the editor, not the file: the outline must follow what the
-        // user has typed, including changes they have not saved yet.
+        // Read from the editor, not the file, so unsaved headings show up.
         let text = self.view.read(cx).editor.read(cx).value();
         Some(super::markdown_outline::headings(&text))
     }
@@ -194,47 +182,32 @@ impl DocumentController for MarkdownController {
     }
 }
 
-/// How much of the pane the preview takes.
-///
-/// The names are written to the session file, so renaming one loses the layout
-/// of every document already saved under the old name — the same rule the pane
-/// ids follow.
+/// How much of the pane the preview takes. The names are written to the session
+/// file, so renaming one loses the layout of documents saved under the old name.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 enum Layout {
-    /// Editor and preview side by side.
     #[serde(rename = "split")]
     Split,
-    /// Editor only.
     #[default]
     #[serde(rename = "editor")]
     EditorOnly,
-    /// Preview only.
     #[serde(rename = "preview")]
     PreviewOnly,
 }
 
-/// What the markdown viewer keeps between runs.
-///
-/// Its own type, so the session file's shape is spelled here rather than in the
-/// shell: a layout name this build does not know fails to decode and the viewer
-/// opens at its default.
-///
-/// The optional fields are what a session written before they existed leaves
-/// out; each then falls back to what a fresh tab would do.
+/// What the markdown viewer keeps between runs. Optional fields are what an older
+/// session leaves out; each falls back to a fresh tab's default.
 #[derive(serde::Serialize, serde::Deserialize)]
 struct MarkdownViewState {
     layout: Layout,
-    /// Soft wrap, as the status bar's switch left it.
     #[serde(default)]
     wrap: Option<bool>,
-    /// Where the caret was, so a long document reopens where it was left.
     #[serde(default)]
     cursor: Option<Position>,
 }
 
 impl Layout {
-    /// The glyph the status bar's switch draws for this layout: a pen for the
-    /// editor, columns for the split, an eye for the preview.
+    /// A pen for the editor, columns for the split, an eye for the preview.
     fn icon(self) -> lucide_icons::Icon {
         match self {
             Layout::Split => lucide_icons::Icon::Columns2,
@@ -252,13 +225,10 @@ pub struct MarkdownView {
     dirty: bool,
     stale: bool,
     layout: Layout,
-    /// Whether the editor wraps long lines, as the status bar's switch leaves it.
     wrap: bool,
-    /// The shell, because the layout is part of the session and only the shell
-    /// writes that file (see [`Self::cycle_layout`]).
+    /// The wrap and layout choices are written to the session by the shell.
     shell: WeakEntity<AppShell>,
-    /// The caret position the status bar was last drawn for, so a notify that
-    /// does not move the caret does not redraw the view.
+    /// The caret position the status bar was last drawn for.
     last_cursor: Position,
     _change: Subscription,
     _cursor: Subscription,
@@ -275,17 +245,13 @@ impl MarkdownView {
         let change = cx.subscribe(&editor, |this: &mut Self, _, event: &InputEvent, cx| {
             if matches!(event, InputEvent::Change) {
                 this.dirty = true;
-                // The panel re-broadcasts this, so a pane showing something
-                // derived from the buffer (the outline) follows the typing.
+                // The panel re-broadcasts this to panes derived from the buffer.
                 cx.emit(());
                 cx.notify();
             }
         });
-        // The status bar shows the caret, and the editor emits no event for a
-        // move that changes no text. It does notify, but also for things that
-        // leave the caret where it is (its blink cycle runs off its own
-        // entity), so this redraws only when the position actually moved —
-        // otherwise the preview would be re-rendered twice a second.
+        // The editor notifies on its blink cycle too, so redraw only on a move —
+        // otherwise the preview would re-render twice a second.
         let last_cursor = editor.read(cx).cursor_position();
         let cursor = cx.observe(&editor, |this: &mut Self, editor, cx| {
             let position = editor.read(cx).cursor_position();
@@ -325,9 +291,8 @@ impl MarkdownView {
         };
         self.dirty = false;
         self.stale = false;
-        // Saving writes the buffer out, and the watcher reports that write as a
-        // disk change; replacing the buffer with its own text would reset the
-        // caret and the scroll on every save.
+        // The watcher reports our own save as a disk change; resetting the buffer
+        // to its own text would drop the caret and the scroll on every save.
         if self.editor.read(cx).value().as_ref() == text {
             cx.notify();
             return;
@@ -342,10 +307,6 @@ impl MarkdownView {
     }
 
     /// Step to the next layout: split, editor only, preview only, and around.
-    ///
-    /// The layout is saved in the session, and this is one of the few changes
-    /// that does not reach the shell on its own, so the save is asked for here
-    /// rather than left to the next unrelated write.
     fn cycle_layout(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.layout = match self.layout {
             Layout::Split => Layout::EditorOnly,
@@ -394,9 +355,8 @@ impl Render for MarkdownView {
         let border = cx.theme().border;
 
         let position = self.editor.read(cx).cursor_position();
-        // The lucide font is not an SVG asset, so the glyph goes in as a child
-        // rather than through `Button::icon`; the square is spelled in `class`
-        // because `xsmall` sizing adds padding a status bar item cannot spare.
+        // The lucide font is not an SVG, so the glyph is a child rather than
+        // `Button::icon`; `class` sets the square because `xsmall` adds padding.
         let layout_switch = rsx! {
             <Button("markdown-layout")
                 ghost
@@ -425,8 +385,6 @@ impl Render for MarkdownView {
                 class="flex flex-col size-full"
                 key_context={super::text::DOCUMENT_CONTEXT}
                 onAction={cx.listener(|this, _: &super::text::SaveDocument, window, cx| {
-                    // A save that fails is reported rather than swallowed: the
-                    // tab must not lose its dirty marker on a failed write.
                     if let Err(error) = this.save(window, cx) {
                         log::error!("{error}");
                     }

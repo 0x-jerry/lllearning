@@ -1,12 +1,6 @@
-//! The vertical activity strip beside each side dock.
-//!
-//! One button per registered pane for the slot. The strip is the only place the
-//! shell enumerates panes, and it reads them from the registry — so a new pane
-//! appears here with no edit to this file.
-//!
-//! There is no separate collapse button: pressing the pane already on show is
-//! what hides the dock, and that decision belongs to the shell, so this file
-//! only reports which id was pressed.
+//! The vertical activity strip beside each side dock: one button per pane in
+//! the slot, read from the registry. Pressing the pane on show hides the dock;
+//! that decision is the shell's, so this only reports which id was pressed.
 
 use gpui::component::{
     Selectable as _,
@@ -23,8 +17,7 @@ use crate::{
     panes::{self, PaneSlot},
 };
 
-/// The strip's width, and the width the dock element keeps when its pane is put
-/// away.
+/// The strip's width, and the width the dock keeps when its pane is put away.
 pub(crate) const STRIP_WIDTH: gpui::Pixels = px(36.);
 
 /// What a strip button reports when it is pressed: the provider id.
@@ -33,9 +26,7 @@ type SelectHandler = std::rc::Rc<dyn Fn(&SharedString, &mut Window, &mut App) + 
 /// The strip beside one dock.
 pub struct ActivityBar {
     slot: PaneSlot,
-    /// The panes this strip offers, resolved from the registry by the caller.
     providers: Vec<std::rc::Rc<dyn panes::PaneProvider>>,
-    /// The provider id the dock is showing, so its button reads as selected.
     /// `None` when the dock is collapsed, so no button claims to be on show.
     active: Option<String>,
     /// `Rc` because every button shares one handler.
@@ -43,10 +34,6 @@ pub struct ActivityBar {
 }
 
 impl ActivityBar {
-    /// A strip for `slot`, with `active` marking the pane on show.
-    ///
-    /// The providers are resolved by the caller, which already holds an
-    /// immutable borrow of the app while it builds the listeners.
     pub fn new(
         slot: PaneSlot,
         active: Option<String>,
@@ -71,9 +58,8 @@ impl ActivityBar {
 
     /// The strip as an element.
     ///
-    /// The theme values are passed in rather than read here, because the caller
-    /// already holds an immutable borrow of the app while it builds the
-    /// listeners.
+    /// The theme values are passed in because the caller already holds an
+    /// immutable borrow of the app while it builds the listeners.
     pub fn render(self, border: gpui::Hsla, sidebar: gpui::Hsla) -> gpui::AnyElement {
         let slot = self.slot;
         let providers = self.providers;
@@ -88,16 +74,13 @@ impl ActivityBar {
                 let is_active = active.as_deref().is_some_and(|current| current == id);
                 let glyph = provider.icon();
                 let id_for_click = SharedString::from(id.to_owned());
-                // The handler is shared between every button, so it is cloned
-                // into each closure rather than moved out of the strip.
                 let on_select = on_select.clone();
 
                 let element_id = SharedString::from(format!("activity-{}-{id}", slot_name(slot)));
 
-                // The lucide font is not an SVG asset, so the glyph goes in as a
-                // child element rather than through `Button::icon`. The square is
-                // spelled in `class` because `small` sizes a labelled button, and
-                // its horizontal padding would overflow the 36px strip.
+                // The lucide font is not an SVG, so the glyph is a child rather
+                // than `Button::icon`. `class` sets the square because `small`
+                // sizes a labelled button and its padding overflows 36px.
                 rsx! {
                     <Button(element_id)
                         ghost

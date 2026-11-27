@@ -1,9 +1,5 @@
-//! The title bar.
-//!
-//! `gpui_component::TitleBar` already owns the window drag, the double-click
-//! zoom and the native window controls, so this only supplies the app mark on
-//! the left. The folder actions live on the explorer's own toolbar, which is
-//! the pane they act on.
+//! The title bar: `gpui_component::TitleBar` owns the drag, the zoom and the
+//! native controls; this supplies the app mark.
 
 use std::sync::{Arc, OnceLock};
 
@@ -13,12 +9,7 @@ use gpui::{
 };
 use gpui_rsx::rsx;
 
-/// The app icon, decoded once for the life of the process.
-///
-/// It is embedded rather than loaded through the asset source so the mark needs
-/// no asset path and no `img` resource lookup: the bytes are already in the
-/// binary, and the decoder is keyed on their hash, so one `Arc` serves every
-/// frame.
+/// The app icon, decoded once and embedded so it needs no asset lookup.
 fn logo() -> Arc<Image> {
     static LOGO: OnceLock<Arc<Image>> = OnceLock::new();
     LOGO.get_or_init(|| {
@@ -30,7 +21,7 @@ fn logo() -> Arc<Image> {
     .clone()
 }
 
-/// The title bar: the app icon, then the app name.
+/// The app icon, then the app name.
 pub fn render() -> AnyElement {
     let icon = logo();
 

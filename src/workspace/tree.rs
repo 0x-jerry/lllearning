@@ -1,22 +1,8 @@
 //! The explorer's lazy directory cache, and the translation from it to
-//! `TreeItem`s.
+//! `TreeItem`s. Nothing is read until a directory is expanded.
 //!
-//! The cache holds one entry per directory that has ever been read, keyed by
-//! its canonical path. Nothing is read until a directory is expanded, so a
-//! workspace with a deep tree costs one `read_dir` at startup — and that one is
-//! performed on the background executor, because a `read_dir` on a network share
-//! blocks for as long as the network takes (risk R8).
-//!
-//! # Why expansion lives here and not in `TreeItem`
-//!
-//! `TreeState::set_items` rebuilds the flat entry list from scratch, and a
-//! rebuilt `TreeItem` carries whatever expansion flag it was constructed with.
-//! `TreeItem`'s flag is `Rc<RefCell<..>>` shared with clones, but the *tree* is
-//! what a rebuild consumes, so any node the cache hands out must already have
-//! the right flag. This module is therefore the single owner of expansion
-//! state; the tree is rendered from it, never the other way round. That is also
-//! what makes risk R5 (a rebuild losing the selection and the open folders)
-//! tractable.
+//! Expansion state lives here, not in `TreeItem`: a rebuild consumes the tree, so
+//! whatever the cache hands out already carries the right flags.
 
 use std::{
     collections::{HashMap, HashSet},
@@ -41,7 +27,7 @@ pub struct DirTree {
     loaded: HashMap<PathBuf, LoadedDir>,
     /// Directories the user has opened, by path.
     expanded: HashSet<PathBuf>,
-    /// Paths the user has selected, so a rebuild can restore the highlight.
+    /// The highlighted entry, so a rebuild can restore it.
     selected: Option<PathBuf>,
     /// Directories whose listing was too long, for the explorer to mark.
     truncated: HashSet<PathBuf>,
@@ -70,13 +56,8 @@ impl DirTree {
         self.selected = path;
     }
 
-    /// Record what a click in the tree did: the row it landed on, and whether
-    /// that row was opened or closed.
-    ///
-    /// The click's effect lives in the `TreeState` first — it toggles the row
-    /// and emits the event before the cache hears about it — so the cache has
-    /// to be told the new state rather than flipping its own, or the two
-    /// disagree and the next click closes what looks open.
+    /// Record what a click did. The `TreeState` toggles the row first, so the
+    /// cache is told the new state rather than flipping its own.
     pub fn set_expanded(&mut self, dir: &Path, expanded: bool) {
         if expanded {
             self.expanded.insert(dir.to_path_buf());
@@ -102,12 +83,8 @@ impl DirTree {
         self.expanded.contains(path)
     }
 
-    /// Start a new workspace at `root`, dropping everything cached for the old
-    /// one, and read the root's children here.
-    ///
-    /// This is the synchronous form, for tests and for callers already on a
-    /// thread that may block. The UI calls [`Self::set_root_unread`] instead and
-    /// reads the listing on the background executor (risk R8).
+    /// Start a new workspace at `root` and read its children here. The UI uses
+    /// [`Self::set_root_unread`] and reads on the background executor instead.
     #[allow(dead_code)]
     pub fn set_root(&mut self, root: PathBuf) -> std::io::Result<()> {
         self.set_root_unread(root.clone());
@@ -119,8 +96,7 @@ impl DirTree {
                 }
                 Ok(())
             }
-            // A root that cannot be read is not a root: leaving it published
-            // would put a folder in the tree that can never be expanded.
+            // A root that cannot be read is not a root.
             Err(error) => {
                 self.reset();
                 Err(error)
@@ -128,12 +104,8 @@ impl DirTree {
         }
     }
 
-    /// Start a new workspace at `root` without reading it.
-    ///
-    /// The root is marked open and cached as empty, so the tree has a row for it
-    /// immediately and shows its children once the caller installs the listing
-    /// with [`Self::insert_children`]. Reading it here is what froze the window
-    /// on a slow folder at startup (risk R8).
+    /// Start a new workspace at `root` without reading it. The caller installs
+    /// the listing with [`Self::insert_children`].
     pub fn set_root_unread(&mut self, root: PathBuf) {
         self.reset();
         self.root = Some(root.clone());
@@ -150,11 +122,8 @@ impl DirTree {
         self.truncated.clear();
     }
 
-    /// Read a directory's children into the cache, unless already there.
-    ///
-    /// Returns whether anything changed, which is what tells the caller whether
-    /// the tree needs rebuilding. An unreadable directory is cached as empty so
-    /// that a second attempt does not retry a known-bad path on every expand.
+    /// Read a directory's children into the cache, unless already there. An
+    /// unreadable directory is cached as empty so a second expand does not retry.
     pub fn load_children(&mut self, dir: &Path) -> bool {
         if self.loaded.contains_key(dir) {
             return false;
@@ -173,17 +142,13 @@ impl DirTree {
     }
 
     /// Forget a directory's listing so the next expand re-reads it.
-    ///
-    /// Used by the watcher when a directory's contents change underneath us.
     pub fn invalidate(&mut self, dir: &Path) {
         self.loaded.remove(dir);
         self.truncated.remove(dir);
     }
 
-    /// Re-read a directory that is already cached, keeping it cached.
-    ///
-    /// Unlike [`Self::invalidate`] this leaves the expansion state alone, so the
-    /// tree does not flicker closed while its contents are refreshed.
+    /// Re-read a cached directory, keeping the expansion state so the tree does
+    /// not flicker closed.
     #[allow(dead_code)]
     pub fn refresh(&mut self, dir: &Path) -> bool {
         if !self.loaded.contains_key(dir) {
@@ -194,8 +159,6 @@ impl DirTree {
     }
 
     /// Forget every cached listing, keeping the root and what is open.
-    ///
-    /// The refresh button's action: it re-reads on demand rather than up front.
     pub fn invalidate_all(&mut self) {
         let root = self.root.clone();
         let expanded = std::mem::take(&mut self.expanded);
@@ -207,11 +170,8 @@ impl DirTree {
         }
     }
 
-    /// Read a directory on the current thread and return it as a listing, for
-    /// the caller to install with [`Self::insert_children`].
-    ///
-    /// Static rather than a method so a background task can call it without
-    /// holding the tree, which lives on the UI thread.
+    /// Read a directory on the current thread for the caller to install. Static
+    /// so a background task can call it without holding the tree.
     pub fn read_listing(dir: &Path) -> (PathBuf, Vec<DirEntryInfo>, bool) {
         match read_dir_sorted(dir) {
             Ok((children, truncated)) => (dir.to_path_buf(), children, truncated),
@@ -225,11 +185,8 @@ impl DirTree {
         self.expanded.insert(dir.to_path_buf());
     }
 
-    /// Open every ancestor of `path` below the root, and select it.
-    ///
-    /// This is how a restored document re-opens the folders leading to it. It
-    /// only marks directories expanded; the caller still has to load the
-    /// children it wants visible.
+    /// Open every ancestor of `path` below the root, and select it. The caller
+    /// still has to load the children it wants visible.
     pub fn reveal(&mut self, path: &Path) {
         let Some(root) = self.root.clone() else {
             return;
@@ -250,9 +207,6 @@ impl DirTree {
     }
 
     /// Every directory that is open, root included.
-    ///
-    /// The refresh button re-reads these; the list is owned so the caller can
-    /// hand it to a background task while the tree stays borrowable.
     pub fn open_dirs(&self) -> Vec<PathBuf> {
         let mut dirs: Vec<PathBuf> = self.expanded.iter().cloned().collect();
         dirs.sort();
@@ -261,10 +215,6 @@ impl DirTree {
 
     /// Install a listing that was read elsewhere, usually on the background
     /// executor.
-    ///
-    /// Merging rather than reading here is what keeps `read_dir` off the UI
-    /// thread (risk R8): the caller reads on a background thread and hands the
-    /// result back.
     pub fn insert_children(&mut self, dir: PathBuf, children: Vec<DirEntryInfo>, truncated: bool) {
         if truncated {
             self.truncated.insert(dir.clone());
@@ -280,9 +230,6 @@ impl DirTree {
     }
 
     /// Every directory that is open and whose children are not cached.
-    ///
-    /// The caller loads these; the workspace uses it to restore a session's
-    /// open folders without walking the disk synchronously in one burst.
     pub fn expanded_without_children(&self) -> Vec<PathBuf> {
         self.expanded
             .iter()
@@ -293,15 +240,9 @@ impl DirTree {
 
     /// The tree, ready for `TreeState::set_items`.
     ///
-    /// The root's *children* are the top level, not the root: the folder is
-    /// already named in the toolbar above the tree, and a single always-open
-    /// row around everything would cost a level of indentation and a row that
-    /// can never be clicked away.
-    ///
-    /// Each directory that has been read gets its children as `TreeItem`s; an
-    /// expanded directory is built with `expanded(true)` so the tree shows its
-    /// contents. Directories not yet read appear as leaves, which is what makes
-    /// expansion lazy.
+    /// The root's *children* are the top level: the folder is already named in
+    /// the toolbar, and a row around everything would cost a level of
+    /// indentation. A directory that was never read appears as a leaf.
     pub fn items(&self) -> Vec<TreeItem> {
         let Some(root) = &self.root else {
             return Vec::new();
@@ -335,9 +276,8 @@ impl DirTree {
             return item;
         }
         if !expanded {
-            // A closed directory keeps a placeholder child so `is_folder()` —
-            // `!children.is_empty()` — stays true and the row is expandable.
-            // Risk R3: without it, an unread directory cannot be opened at all.
+            // A closed directory keeps a placeholder child so `is_folder()` stays
+            // true and the row is expandable.
             return item.child(placeholder_child());
         }
 
@@ -346,16 +286,12 @@ impl DirTree {
                 let children = self.children_of(path);
                 item.children(children).expanded(true)
             }
-            // An open directory with nothing in it still needs the placeholder,
-            // or the row stops being a folder the moment it is expanded.
+            // An open directory with nothing in it still needs the placeholder.
             _ => item.child(placeholder_child()).expanded(true),
         }
     }
 
     /// Whether `path` is a directory according to the cache.
-    ///
-    /// Directories that were never read are only known from their parent's
-    /// listing, which is exactly where this looks.
     fn is_dir(&self, path: &Path) -> bool {
         if self.loaded.contains_key(path) {
             return true;
@@ -391,20 +327,15 @@ fn placeholder_child() -> TreeItem {
     TreeItem::new(PLACEHOLDER_ID, "").disabled(true)
 }
 
-/// The tree id for a path: its absolute path string.
-///
-/// Using the path as the id is what lets a click resolve straight back to a
-/// file, and what makes the id stable across rebuilds.
+/// The tree id for a path: its absolute path string, which resolves back to a
+/// file and stays stable across rebuilds.
 fn id_for(path: &Path) -> SharedString {
     SharedString::from(path.to_string_lossy().into_owned())
 }
 
-/// Fill in every open directory's children, reading the disk as needed.
-///
-/// Returns whether anything was read, so the caller knows to rebuild the tree.
-/// This is the synchronous form used by tests and by the session restore, which
-/// reads a handful of folders once; the interactive path reads one directory on
-/// the background executor instead.
+/// Fill in every open directory's children, reading the disk as needed. The
+/// synchronous form: tests and the session restore, which reads a handful of
+/// folders once.
 #[allow(dead_code)]
 pub fn load_expanded(tree: &mut DirTree) -> bool {
     let mut changed = false;
@@ -433,8 +364,7 @@ mod tests {
 
     #[test]
     fn an_unread_directory_is_still_a_folder() {
-        // Risk R3: `TreeItem::is_folder()` is `!children.is_empty()`, so an
-        // unread directory needs a placeholder or it cannot be expanded.
+        // `TreeItem::is_folder()` is `!children.is_empty()`.
         let dir = temp_dir("folder-flag");
         std::fs::create_dir(dir.join("sub")).unwrap();
         std::fs::write(dir.join("file.txt"), b"x").unwrap();
@@ -556,10 +486,6 @@ mod tests {
 
     #[test]
     fn a_clicked_directory_folds_and_unfolds_repeatedly() {
-        // The tree toggles the row itself and reports the result; the cache
-        // records it. Flipping the cache's own state instead made the two
-        // disagree after the first click, so the second looked like it only
-        // moved the selection.
         let dir = temp_dir("fold");
         std::fs::create_dir(dir.join("sub")).unwrap();
         std::fs::write(dir.join("sub/one.txt"), b"x").unwrap();

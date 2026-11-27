@@ -22,9 +22,8 @@ pub fn mark(what: &str) {
     log::info!("{what} at {:.1} ms", elapsed().as_secs_f64() * 1000.);
 }
 
-/// The callback runs at the start of the next frame-loop iteration, after this
-/// frame's present — the earliest point the app can observe its own pixels —
-/// and only the first call arms it.
+/// Marks the start of the next frame, which is the earliest point the app can
+/// observe its own pixels. Only the first call arms it.
 pub fn arm_first_paint(window: &gpui::Window) {
     static ARMED: AtomicBool = AtomicBool::new(false);
     if ARMED.swap(true, Ordering::Relaxed) {

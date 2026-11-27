@@ -1,16 +1,6 @@
-//! The outline pane: whatever the active document's viewer says its structure
-//! is.
-//!
-//! This pane knows no syntax. A viewer answers
-//! [`DocumentController::outline`](crate::documents::DocumentController::outline)
-//! and the pane draws the answer, which is why markdown's headings and a future
-//! viewer's symbols are both one method on the viewer rather than a branch here.
-//! A viewer that cannot outline itself answers `None`, and the pane says so
-//! instead of inventing a list from the file's text.
-//!
-//! The pane is a pure function of the shell's active document plus its own
-//! observation of it: it never reads the file from disk, because the viewer's
-//! buffer is the truth and the disk copy may be behind it.
+//! The outline pane: whatever the active document's viewer reports as its
+//! structure. The pane knows no syntax; a viewer that cannot outline itself
+//! answers `None`.
 
 use gpui::component::{
     ActiveTheme as _, Sizable as _,
@@ -60,24 +50,20 @@ impl PaneProvider for OutlinePane {
     }
 }
 
-/// The outline's state: which document is being shown, and nothing about its
+/// The outline's state: which document is being shown, nothing about its
 /// contents.
 pub struct OutlineView {
     focus_handle: FocusHandle,
     shell: gpui::WeakEntity<AppShell>,
-    /// The document the pane is currently outlining, so a re-render can tell
-    /// whether the shell moved on.
     document: Option<Entity<DocumentPanel>>,
-    /// Dropped with the pane: these are what keep it following the shell.
+    /// These are what keep the pane following the shell.
     _subscriptions: Vec<Subscription>,
 }
 
 impl OutlineView {
     fn new(shell: gpui::WeakEntity<AppShell>, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        // The shell subscription goes on now, but the first read of the shell
-        // waits for the end of this frame: the shell builds its panes from
-        // inside `update`, so reading it here would re-enter a shell that is
-        // already leased.
+        // The first read of the shell waits for the end of this frame: the shell
+        // builds its panes from inside `update`, so reading it here panics.
         let shell_changes = shell.upgrade().map(|shell| {
             cx.subscribe_in(
                 &shell,
@@ -98,11 +84,8 @@ impl OutlineView {
         this
     }
 
-    /// Follow whatever the shell is showing.
-    ///
-    /// Called when the shell says the active document changed and when the
-    /// document itself reports its buffer changed — the second is what makes a
-    /// heading appear as the user types it.
+    /// Follow whatever the shell is showing. Called when the active document
+    /// changes and when it reports its buffer changed.
     fn follow(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let shell = self.shell.upgrade();
         let active = shell

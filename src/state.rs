@@ -1,35 +1,24 @@
-//! The session file: what to restore on the next launch.
-//!
-//! The layout used to be gpui's own `DockAreaState`, which the dock crate could
-//! serialise and rebuild. The dock is gone — the shell lays the window out
-//! itself — so the layout is described here, in terms the shell can rebuild:
-//! which folder was open, which pane each side dock was showing, whether each
-//! dock was open and how wide, which documents were open in tab order, which one
-//! was on show, and where the window sat on screen.
+//! The session file: what to restore on the next launch — the folder, each
+//! dock's pane and width, the open documents and the window bounds.
 
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
 /// The schema version. A file written by a different version is ignored rather
-/// than migrated: the layout is a convenience, and a wrong one is worse than a
-/// default. Version 2 is the first written by the shell itself; a version 1 file
-/// was the dock's layout and is not rebuildable.
+/// than migrated.
 pub const SESSION_VERSION: u32 = 2;
 
 /// What survives a restart.
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 pub struct SessionState {
-    /// The schema version this file was written by.
     #[serde(default)]
     pub version: u32,
     /// The workspace folder, canonicalised.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workspace_root: Option<PathBuf>,
-    /// The left dock: which pane it shows, whether it is open, how wide.
     #[serde(default)]
     pub left: SideState,
-    /// The right dock, the same three answers.
     #[serde(default)]
     pub right: SideState,
     /// The open documents, in tab order.
@@ -38,7 +27,6 @@ pub struct SessionState {
     /// The index in [`Self::documents`] that was on show.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub active_document: Option<usize>,
-    /// The window's saved bounds, if it had any.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub window: Option<SavedBounds>,
 }
@@ -49,15 +37,13 @@ pub struct SideState {
     /// The pane id shown in the dock, if one ever was.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub active: Option<String>,
-    /// Whether the dock is open. A missing field means open, so a session that
-    /// predates the flag still shows its panes.
+    /// A missing field means open, so a session that predates the flag still
+    /// shows its panes.
     #[serde(default = "open_by_default")]
     pub open: bool,
-    /// The dock's width, if it has been laid out.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub width: Option<f32>,
-    /// The pane's own state, opaque here: only the pane that wrote it knows what
-    /// it means (see `panes::ViewState`).
+    /// The pane's own state, opaque here.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub state: Option<serde_json::Value>,
 }
@@ -77,45 +63,31 @@ fn open_by_default() -> bool {
     true
 }
 
-/// A document that was open.
-///
-/// The path is kept, and only the path decides how it reopens: the viewer is
-/// chosen by scoring the file's type again, so a build that gained a better
-/// viewer for that type opens it with the better one instead of replaying a
-/// stale choice. What the viewer itself remembers — the markdown viewer's
-/// layout, today — travels beside it in [`Self::view`].
+/// A document that was open. Only the path decides how it reopens, so a build
+/// with a better viewer for that type uses the better one.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct SavedDocument {
     pub path: PathBuf,
-    /// The viewer's own state, opaque here: only the viewer that wrote it knows
-    /// what it means (see `documents::ViewState`). Absent for a viewer that has
-    /// nothing to keep, and for every tab written before this field existed.
+    /// The viewer's own state, opaque here.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub view: Option<serde_json::Value>,
 }
 
-/// A window position and size, in logical pixels.
-///
-/// Logical rather than device pixels, so a session moves between a high-DPI
-/// display and a normal one without the window changing apparent size.
+/// A window position and size, in logical pixels, so the window keeps its
+/// apparent size across displays of different DPI.
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq)]
 pub struct SavedBounds {
     pub x: f32,
     pub y: f32,
     pub width: f32,
     pub height: f32,
-    /// Whether the window was maximised, so the restore size is what it returns
-    /// to when un-maximised.
     #[serde(default)]
     pub maximized: bool,
 }
 
 impl SavedBounds {
-    /// Whether these numbers can be used as a window position and size at all.
-    ///
-    /// The session file is plain JSON and hand-editable, so a nonsense value is
-    /// a possibility rather than a bug; a window restored at one would be
-    /// invisible with no way to bring it back.
+    /// Whether these numbers can be used at all: the file is hand-editable, and
+    /// a window restored at a nonsense value would be invisible.
     pub fn is_usable(&self) -> bool {
         self.x.is_finite()
             && self.y.is_finite()
@@ -138,12 +110,8 @@ pub fn session_path() -> Option<PathBuf> {
     dirs::config_dir().map(|dir| dir.join("lllearning").join("session.json"))
 }
 
-/// Read the session, or `None` when there is nothing usable.
-///
-/// A missing file, an unreadable one, a malformed one and one from another
-/// version all produce `None`, which the shell treats as "start fresh". A
-/// corrupt session must never stop the app from starting (risk R12), so every
-/// failure is logged and swallowed.
+/// Read the session, or `None` when there is nothing usable. Every failure is
+/// logged and swallowed, because a corrupt session must not stop the app.
 pub fn load() -> Option<SessionState> {
     let path = session_path()?;
     let text = match std::fs::read_to_string(&path) {
@@ -175,10 +143,8 @@ pub fn load() -> Option<SessionState> {
     }
 }
 
-/// Write the session, creating its directory if needed.
-///
-/// Errors are logged rather than returned: failing to save a convenience file
-/// is not worth interrupting the user for.
+/// Write the session, creating its directory if needed. Errors are logged:
+/// failing to save a convenience file is not worth interrupting the user.
 pub fn save(session: &SessionState) {
     let Some(path) = session_path() else {
         log::warn!("could not locate a config directory for the session file");

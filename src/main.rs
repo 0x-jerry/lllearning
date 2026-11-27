@@ -1,8 +1,4 @@
-//! Application bootstrap.
-//!
-//! Everything here is wiring: install the fonts and the registries, read the
-//! session, open the window on the shell. The shell itself, its panes and its
-//! viewers live in their own modules.
+//! Application bootstrap: fonts, registries, session, window.
 
 use gpui::WindowOptions;
 use gpui::component::TitleBar;
@@ -18,7 +14,7 @@ mod window;
 mod workspace;
 
 fn main() {
-    // First, so the startup marks in `logging` time everything that follows.
+    // First, so the startup marks time everything that follows.
     logging::init();
 
     // Without this, the WebView2 child view does not render on Windows.
@@ -37,9 +33,7 @@ fn main() {
         .with_quit_mode(tray::quit_mode())
         .run(|cx| {
             gpui::init(cx);
-            // The icon font must be installed before any pane draws a glyph.
             icons::install_font(cx);
-            // The registries must exist before the shell asks what to mount.
             app::init(cx);
 
             if let Err(error) = tray::Tray::install(cx) {
@@ -47,17 +41,12 @@ fn main() {
             }
             logging::mark("fundation initialized");
 
-            // The session is read before the window opens: the shell applies the
-            // saved dock widths while it is constructed, so the first frame lays
-            // the columns out at the widths the user chose.
+            // Read before the window: the shell applies the saved widths as it builds.
             let session = state::load().unwrap_or_default();
 
             let options = WindowOptions {
-                // The size and position the last run left, when they are still on
-                // a display; centred at the default size otherwise.
                 window_bounds: Some(app::shell::opening_bounds(&session, cx)),
                 window_min_size: Some(app::shell::MIN_WINDOW_SIZE),
-                // The title bar draws itself and owns the window drag.
                 ..TitleBar::window_options()
             };
 
@@ -75,8 +64,7 @@ fn main() {
                 }
             };
 
-            // The session save and the dirty-document warning ride on the quit
-            // hook, which needs the finished shell.
+            // The quit hook saves the session and warns about dirty documents.
             shell.update(cx, |shell, cx| shell.install_quit_hook(cx));
         });
 }

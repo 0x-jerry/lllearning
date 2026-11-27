@@ -1,13 +1,6 @@
-//! Which lucide glyphs the app draws, and how to find them.
-//!
-//! The UI names icons as `Icon::Variant` (`lucide_icons::Icon`), so the set is
-//! whatever `src/` mentions. Scanning rather than listing keeps the subset from
-//! going stale: adding an icon to a view is enough, and `src/icons.rs`' coverage
-//! test fails if the font was not rebuilt.
-//!
-//! `lucide_icons::Icon` also exposes the crate's own name-to-code-point table,
-//! so a lucide upgrade that moves a glyph is picked up here rather than pinned
-//! as a literal.
+//! Which lucide glyphs the app draws: whatever `Icon::Variant` the sources name.
+//! Scanning keeps the subset from going stale, and the crate's own name-to-code
+//! table resolves each variant.
 
 use std::{collections::BTreeSet, fs, path::Path};
 
@@ -25,11 +18,8 @@ pub fn drawn_glyphs(manifest: &Path) -> Vec<u32> {
     glyphs.into_iter().collect()
 }
 
-/// Every `Icon::Variant` named under `src/`.
-///
-/// `Icon::new` and `Icon::from` are GPUI Component's icon builder, which shares
-/// the `Icon` name; neither is a variant, and both are dropped here. Everything
-/// else is resolved against lucide, where an unknown one is a build error.
+/// Every `Icon::Variant` named under `src/`. `Icon::new` and `Icon::from` are
+/// GPUI Component's builder and are dropped; anything else must be a lucide icon.
 fn variants(manifest: &Path) -> BTreeSet<String> {
     const NOT_VARIANTS: [&str; 2] = ["new", "from"];
     let mut variants = BTreeSet::new();
@@ -66,15 +56,13 @@ fn kebab_case(variant: &str) -> String {
     for (i, c) in chars.iter().enumerate() {
         if i > 0 {
             let previous = chars[i - 1];
-            // A capital starts a new word, except where it opens a run of
-            // capitals: `Columns2Cog` is `columns-2-cog`, `SquarePen` is
-            // `square-pen`.
+            // A capital starts a new word, except in a run of capitals:
+            // `Columns2Cog` is `columns-2-cog`, `SquarePen` is `square-pen`.
             let word_break = c.is_uppercase()
                 && (previous.is_lowercase()
                     || previous.is_numeric()
                     || chars.get(i + 1).is_some_and(|next| next.is_lowercase()));
-            // A digit also starts a new word: lucide spells the numbered
-            // variants with a dash (`columns-2`, `arrow-up-0-1`).
+            // lucide spells the numbered variants with a dash (`columns-2`).
             let number_break = c.is_ascii_digit() && previous.is_ascii_alphabetic();
             if word_break || number_break {
                 out.push('-');

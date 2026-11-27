@@ -1,17 +1,10 @@
-//! Markdown's outline: its ATX headings, with the line each sits on.
-//!
-//! This lives with the viewer rather than with the outline pane because the
-//! outline is a fact about *this* format. The pane draws whatever a viewer hands
-//! it and knows no syntax at all, which is what keeps a second outlining viewer
-//! from needing an edit to the pane.
+//! Markdown's outline: its ATX headings, with the line each sits on. It lives
+//! with the viewer because the outline is a fact about this format.
 
 use super::OutlineEntry;
 
-/// Every ATX heading in `text`, in document order.
-///
-/// Headings inside a fenced code block are skipped: a `#` in a shell snippet is
-/// a comment, not a heading, and listing it would put a line in the outline that
-/// the preview does not draw as one.
+/// Every ATX heading in `text`, in document order. A heading inside a fenced code
+/// block is a comment, not a heading.
 pub fn headings(text: &str) -> Vec<OutlineEntry> {
     let mut entries = Vec::new();
     let mut fence: Option<&str> = None;

@@ -1,17 +1,13 @@
-//! Which nerd-font glyphs the explorer can draw.
-//!
-//! File-type glyphs come from `devicons`, which keeps its dark and light tables
-//! private, so the code points are read out of the crate source. That way a
-//! table update reaches the font without this file knowing what changed, and
-//! `src/icons.rs`' coverage test catches the case where it does not.
+//! Which nerd-font glyphs the explorer can draw: the private-use code points in
+//! `devicons`' own tables, read from the crate source so a table update reaches
+//! the font.
 
 use std::{collections::BTreeSet, fs};
 
 use crate::font;
 
-/// The nerd font's closed and open folder glyphs, which `src/icons.rs` spells
-/// out itself: `devicons` names only the open one, and only through the fallback
-/// its table returns for a directory.
+/// The folder pair `src/icons.rs` spells out itself, since `devicons` names only
+/// the open one.
 const FOLDER_GLYPHS: [u32; 2] = [0xf114, 0xf115];
 
 /// Every private-use glyph `devicons` can return, plus the folder pair above.
@@ -34,10 +30,7 @@ pub fn drawn_glyphs() -> Vec<u32> {
     glyphs.into_iter().collect()
 }
 
-/// The code points of the `icon:` literals in one table.
-///
-/// Each entry is a char literal: one literal character, or an escaped code point
-/// written as `\u{hex}`. The hex is read as text, so this needs no unescaping.
+/// The code points of the `icon:` literals in one table: one char, or `\u{hex}`.
 fn code_points(table: &str) -> Vec<u32> {
     let mut code_points = Vec::new();
     for (at, _) in table.match_indices("icon: '") {
@@ -55,13 +48,9 @@ fn code_points(table: &str) -> Vec<u32> {
     code_points
 }
 
-/// Whether `code_point` is in a Unicode private-use area, which is where both
-/// icon fonts put their glyphs.
-///
-/// A few `devicons` entries name an ordinary symbol instead (λ, ∞, a gear);
-/// those are not in the nerd font and not what the explorer draws, so they are
-/// skipped rather than asserted against. The table's ASCII fallback for unknown
-/// files is skipped for the same reason — any font draws it.
+/// Whether `code_point` is in a Unicode private-use area. A few `devicons`
+/// entries name an ordinary symbol, and the ASCII fallback for unknown files is
+/// not a nerd glyph.
 fn is_private_use(code_point: u32) -> bool {
     matches!(
         code_point,

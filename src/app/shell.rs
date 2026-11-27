@@ -1,27 +1,9 @@
-//! The application shell.
+//! The shell: two [`SideView`]s around a [`DocumentsView`] in one resizable
+//! group, and what follows from a document opening, closing or being replaced.
+//! Panes and viewers are reached only through their registries.
 //!
-//! The shell knows three seams and nothing else: [`PaneRegistry`] for the side
-//! slots, [`DocumentRegistry`] for the centre, and [`Workspace`] for the folder.
-//! It has no idea what a file, an editor or a webview is — which is what makes
-//! the panes and the viewers replaceable without touching this file.
-//!
-//! What it does own is the *arrangement*: two [`SideView`]s and a
-//! [`DocumentsView`] placed in one resizable group, plus everything that follows
-//! from a document opening, closing or being replaced — the tree reveal, the
-//! `ActiveDocumentChanged` event, the session write. The views draw themselves;
-//! they report the change and the shell decides what it means.
-//!
-//! The activity strips sit outside the resizable group on purpose: a collapsed
-//! dock must not take the button that reopens it with it.
-//!
-//! # Why a few accessors are `pub` but unused by the binary
-//!
-//! [`AppShell::active_panes`], [`AppShell::toggle_dock`],
-//! [`AppShell::is_dock_open`], [`AppShell::pick_folder`] and
-//! [`AppShell::refresh_tree`] are the shell's own seam: a test drives the dock
-//! through them, and a later feature (a keyboard shortcut, a menu) would too.
-//! The dead-code lint cannot see a test-only consumer, so it is allowed on those
-//! items rather than hiding the shell's state behind an incomplete API.
+//! A few accessors are `pub` for tests and future callers and carry
+//! `#[allow(dead_code)]`, because the lint cannot see a test-only consumer.
 
 use std::{collections::HashMap, path::PathBuf};
 
@@ -52,18 +34,15 @@ use crate::{
     workspace::{Workspace, WorkspaceEvent, fs_util},
 };
 
-/// The width the left dock gets when nothing else says otherwise.
+/// The width each dock gets when nothing else says otherwise.
 const LEFT_WIDTH: gpui::Pixels = px(260.);
-/// The width the right dock gets for the same reason.
 const RIGHT_WIDTH: gpui::Pixels = px(420.);
 
 /// The window's size when the session has none worth restoring.
 const DEFAULT_WINDOW_SIZE: gpui::Size<gpui::Pixels> = size(px(1200.), px(760.));
-/// The smallest the window may be.
-///
-/// A restored size is clamped up to it: the platform applies its minimum to a
-/// resize but not to the create, so a session saved at a tiny size would open
-/// smaller than the window can ever be dragged.
+
+/// A restored size is clamped up to this: the platform applies its minimum to a
+/// resize but not to the create.
 pub const MIN_WINDOW_SIZE: gpui::Size<gpui::Pixels> = size(px(900.), px(600.));
 
 /// How narrow each side dock may be dragged, and how wide.
@@ -73,56 +52,31 @@ const RIGHT_RANGE: std::ops::Range<gpui::Pixels> = px(260.)..px(800.);
 /// The application shell.
 pub struct AppShell {
     focus_handle: FocusHandle,
-    /// The folder, its tree and its watcher.
     workspace: Entity<Workspace>,
-    /// The centre: the document tabs and the document on show.
     documents: DocumentsView,
-    /// The two side docks, by slot.
     sides: HashMap<PaneSlot, Entity<SideView>>,
-    /// The widths of the three columns, so a drag and a restart agree.
     columns: Entity<ResizableState>,
-    /// The width each dock was last measured at, in logical pixels.
-    ///
-    /// The measurement is the truth while a dock is open and the group has laid
-    /// the columns out, but a collapsed panel measures zero — and the width the
-    /// user dragged it to would go with it, since nothing about a hidden panel
-    /// remembers where the divider was. This is what the session write and the
-    /// next restore read instead.
+    /// The width each dock was last measured at. A collapsed panel measures
+    /// zero, so the dragged width has to live outside the group.
     widths: HashMap<PaneSlot, f32>,
-    /// The file last revealed in the tree.
-    ///
-    /// The reveal must not scroll and rebuild the tree on every frame of a
-    /// divider drag; this is what makes it happen only when the displayed *file*
-    /// actually changed.
+    /// The file last revealed in the tree, so a divider drag does not re-reveal
+    /// it on every frame.
     revealed: Option<PathBuf>,
-    /// Set while [`Self::restore_session`] runs.
-    ///
-    /// The restore calls `Workspace::set_root`, which emits
-    /// [`WorkspaceEvent::RootChanged`] — and that event means "the user opened a
-    /// different folder", whose handling closes every tab and resets both
-    /// docks. The restore's own root is not that, so the flag tells the handler
-    /// to leave the tabs and panes the session just restored alone.
+    /// Set while the restore runs: `set_root` emits `RootChanged`, which
+    /// normally closes every tab and resets the docks.
     restoring: bool,
     /// The pending debounced session write, held so a newer change can reuse it.
     save_task: Option<gpui::Task<()>>,
-    /// The window's bounds as last observed, for the session write.
-    ///
-    /// Held here rather than read when the session is written: the quit save runs
-    /// from a hook that has no `Window`, and the tray's Hide takes the window off
-    /// the screen without moving it, so the last observed bounds stay right.
+    /// The last observed window bounds: the quit save runs from a hook with no
+    /// `Window`.
     bounds: Option<SavedBounds>,
-    /// Dropped with the shell, so the subscriptions do not outlive it.
     _subscriptions: Vec<Subscription>,
 }
 
 impl EventEmitter<()> for AppShell {}
 
-/// The shell's own event: the document on show changed.
-///
-/// A pane that follows the active document — the outline is the one that does —
-/// subscribes to this rather than re-reading the shell on a timer. The event
-/// carries nothing: the subscriber reads [`AppShell::active_document`], so there
-/// is no second copy of the shell's state to fall out of step.
+/// The shell's own event: the document on show changed. It carries nothing, so
+/// a subscriber reads [`AppShell::active_document`] instead.
 #[derive(Clone, Copy, Debug)]
 pub struct ActiveDocumentChanged;
 
@@ -152,9 +106,6 @@ impl Focusable for AppShell {
 
 impl AppShell {
     /// Build the shell, restoring `session` if it is present.
-    ///
-    /// The window's build closure hands out `&mut App`, so the entity is created
-    /// here and its construction work runs inside `cx.new`'s own context.
     pub fn new(session: SessionState, window: &mut Window, cx: &mut App) -> Entity<Self> {
         let workspace = Workspace::new(cx);
         let columns = cx.new(|_| ResizableState::default());
@@ -176,24 +127,15 @@ impl AppShell {
 
         shell.update(cx, |shell, cx| {
             shell.subscribe_all(window, cx);
-            // The docks' *state* only: which pane each shows and how wide, with
-            // no pane built. That is cheap and it is what the first frame needs
-            // to lay the three columns out at the widths the user chose.
+            // State only: no pane is built, which is what keeps the first frame cheap.
             shell.apply_saved_sides(&session, cx);
 
-            // The restore itself: the workspace root and the tabs now, the panes
-            // after the frame they are first drawn in has gone out. Building a
-            // side pane is the expensive part (the browser's WebView2 alone is
-            // several hundred milliseconds), and this closure runs inside the
-            // window's build closure — before the window's first frame — so
-            // anything expensive here is time the user spends looking at a black
-            // rectangle, which is what the platform's window class paints until
-            // GPUI's first frame reaches it (risk R19).
+            // The panes are built after the first frame; anything expensive here
+            // is time the user spends looking at a black window.
             shell.restore_session(session, window, cx);
         });
 
-        // Closing the window hides it to the tray rather than quitting; the
-        // tray's Quit is what ends the app.
+        // Closing the window hides it to the tray; the tray's Quit ends the app.
         crate::tray::keep_window_on_close(window, cx);
 
         shell
@@ -201,14 +143,11 @@ impl AppShell {
 
     /// Register the quit-time session save and dirty guard.
     ///
-    /// Called once, after the window exists. The save is unconditional — a
-    /// session file is a convenience, not user data — but unsaved documents are
-    /// logged before the app goes, because there is no window left to prompt in
-    /// by the time this runs (risk R11).
+    /// Unsaved documents can only be logged, not prompted for: no window is left
+    /// by the time the hook runs.
     pub fn install_quit_hook(&mut self, cx: &mut Context<Self>) {
-        // The hook is handed the shell itself. Reading it through a weak handle
-        // would re-enter the very `update` that is running the hook, which panics
-        // with "cannot read AppShell while it is already being updated".
+        // Reading the shell through a weak handle would re-enter the `update`
+        // running the hook, which panics.
         let subscription = cx.on_app_quit(|shell: &mut Self, cx| {
             if any_dirty(shell, cx) {
                 log::warn!(
@@ -273,8 +212,7 @@ impl AppShell {
             },
         );
 
-        // A move and a resize arrive the same way, and a drag produces dozens of
-        // them; the debounce is what keeps that off the disk.
+        // A drag produces dozens of bounds events; the debounce keeps them off the disk.
         let bounds_subscription =
             cx.observe_window_bounds(window, |this, window, cx| this.record_bounds(window, cx));
 
@@ -286,10 +224,6 @@ impl AppShell {
     }
 
     /// Remember where the window is, and schedule the write that keeps it.
-    ///
-    /// The platform also reports a window that merely gained or lost the
-    /// activation, so an unchanged bounds is the common case and is dropped here
-    /// rather than rewritten to the session.
     fn record_bounds(&mut self, window: &Window, cx: &mut Context<Self>) {
         let bounds = saved_bounds(window);
         if self.bounds == Some(bounds) {
@@ -308,15 +242,10 @@ impl AppShell {
     ) {
         match event {
             WorkspaceEvent::RootChanged => {
-                // The root the restore just opened is not a folder switch: the
-                // tabs the session named belong to that very folder, and closing
-                // them here is how a restart would silently lose them.
+                // The restore's own root is not a folder switch.
                 if std::mem::take(&mut self.restoring) {
                     return;
                 }
-                // A different folder means the old tabs no longer belong to the
-                // workspace, so they are closed rather than left pointing at
-                // files that are not in the tree.
                 self.close_all_documents(window, cx);
                 self.default_layout(window, cx);
                 self.schedule_session_save(window, cx);
@@ -332,12 +261,8 @@ impl AppShell {
         cx.notify();
     }
 
-    /// Bring each open document in line with what changed on disk.
-    ///
-    /// A clean buffer is reloaded silently, because the user had no work in it.
-    /// A dirty buffer is only marked: overwriting unsaved edits with the disk
-    /// version would lose them (risk R11), so the panel shows a banner and the
-    /// user decides.
+    /// Bring each open document in line with what changed on disk: reload a
+    /// clean buffer, only mark a dirty one, so unsaved edits are not lost.
     fn sync_disk_changes(
         &mut self,
         paths: &[PathBuf],
@@ -377,8 +302,8 @@ impl AppShell {
         side
     }
 
-    /// Install the layout a fresh session starts with: the explorer on the left,
-    /// the browser on the right, both open, and no document.
+    /// The layout a fresh session starts with: both docks open on their first
+    /// pane, no document.
     fn default_layout(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.sides.clear();
         for slot in PaneSlot::ALL {
@@ -396,19 +321,14 @@ impl AppShell {
     }
 
     /// Apply each dock's saved pane id, open state and width, building nothing.
-    ///
-    /// [`SideView::apply`] is pure bookkeeping, so this is cheap enough for the
-    /// window's build closure, and it is what lets the first frame place the
-    /// columns at the widths the session named instead of jumping to the
-    /// defaults and then back.
+    /// This is what lets the first frame place the columns at the saved widths.
     fn apply_saved_sides(&mut self, session: &SessionState, cx: &mut Context<Self>) {
         for slot in PaneSlot::ALL {
             let saved = match slot {
                 PaneSlot::Left => &session.left,
                 PaneSlot::Right => &session.right,
             };
-            // The group has measured nothing yet, so these are the widths the
-            // first frame has to place the columns at.
+            // Nothing is measured yet, so these are the widths the first frame uses.
             if let Some(width) = saved.width.filter(|width| *width > 0.) {
                 self.widths.insert(slot, width);
             }
@@ -417,27 +337,17 @@ impl AppShell {
         }
     }
 
-    /// Restore the saved session, falling back to the default layout.
-    ///
-    /// The cheap half — the workspace root and the tabs — runs as soon as the
-    /// window exists. The expensive half — building each dock's pane, which
-    /// constructs the browser's WebView2 — runs once the frame carrying the tree
-    /// and the tabs has been presented (see [`Self::new`]).
+    /// Restore the saved session, falling back to the default layout. The root
+    /// and the tabs now, the panes once the first frame is presented.
     fn restore_session(
         &mut self,
         session: SessionState,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        // The workspace first: the panes read it as they are built.
-        //
-        // `set_root` emits `RootChanged` on success, and that event's handler
-        // closes every tab and resets both docks — which would throw away the
-        // documents and panes this function is about to restore. The flag is
-        // therefore raised around the call. It is lowered again here when the
-        // folder could not be opened, because `set_root` reports that as an
-        // `Error` and emits no `RootChanged` at all; a flag left up would then
-        // swallow the user's next, genuine folder switch.
+        // The workspace first: the panes read it as they are built. The flag is
+        // cleared when the folder could not be opened, because `set_root` then
+        // emits no `RootChanged`.
         if let Some(root) = session.workspace_root.clone()
             && root.exists()
         {
@@ -458,17 +368,15 @@ impl AppShell {
                 cx,
             ) {
                 Some(document) => {
-                    // The viewer's own state goes back after it is built, because
-                    // only the viewer knows what its saved value means. Cloned out
-                    // first: applying it re-enters the app through `cx`.
+                    // Applied after the build, and cloned out first: applying it
+                    // re-enters the app through `cx`.
                     if let Some(state) = &saved.view {
                         let controller = document.read(cx).controller().clone();
                         controller.restore_view_state(state, window, cx);
                     }
                     self.documents.push(document)
                 }
-                // The file or its viewer is gone. The tab is kept rather than
-                // dropped, because the session named it (risk R12).
+                // A file this build cannot reopen keeps its tab.
                 None => {
                     log::warn!("could not reopen {}", saved.path.display());
                     self.documents
@@ -485,17 +393,8 @@ impl AppShell {
             self.reveal(&path, window, cx);
         }
 
-        // Yielding here is what makes the frame above reach the screen before
-        // the panes are built. A foreground task's timer resolves on the
-        // executor's own turn, which is between frame iterations; `defer_in` and
-        // `on_next_frame` both run *inside* one, before it presents, so building
-        // the panes there delays the very frame this is trying to get out. The
-        // task is spawned from a `cx` that still has its window, which is why the
-        // panes can be built with `update_in` when it wakes.
-        //
-        // `apply_saved_sides` already recorded which pane each dock shows, so all
-        // that is left is to build them — and only the docks that are open, since
-        // a collapsed one builds nothing.
+        // Yielding lets the frame above reach the screen before the panes are
+        // built: `defer_in` and `on_next_frame` both run before a frame presents.
         cx.spawn_in(window, async move |this, cx| {
             cx.background_executor()
                 .timer(std::time::Duration::ZERO)
@@ -554,9 +453,7 @@ impl AppShell {
         if !self.documents.select(ix) {
             return;
         }
-        // Selecting a tab is also focusing it: the editor should take the
-        // keyboard, or the user's next keystroke goes to the last thing that had
-        // it.
+        // Selecting a tab focuses it, so the next keystroke reaches the editor.
         if let Some(document) = self.active_document(cx) {
             let controller = document.read(cx).controller().clone();
             controller.focus(window, cx);
@@ -568,11 +465,7 @@ impl AppShell {
         cx.notify();
     }
 
-    /// Show `path` in the explorer's tree, if the tree moved.
-    ///
-    /// Silent about a dock the user has collapsed or switched to another pane:
-    /// the tree is kept in step either way, but revealing is not an excuse to
-    /// reopen a dock someone put away.
+    /// Show `path` in the tree, without reopening a dock the user put away.
     fn reveal(&mut self, path: &std::path::Path, window: &mut Window, cx: &mut Context<Self>) {
         if self
             .revealed
@@ -587,9 +480,6 @@ impl AppShell {
     }
 
     /// Close one document, prompting if it has unsaved changes.
-    ///
-    /// This is the path a keyboard shortcut, a menu and the tab's own close
-    /// button all take.
     pub fn close_document(
         &mut self,
         document: Entity<DocumentPanel>,
@@ -605,10 +495,8 @@ impl AppShell {
 
     /// Ask whether to save, discard or cancel before closing.
     ///
-    /// The prompt is its own window: an in-window dialog is covered by the
-    /// browser pane's native child window (risk R1). Opening a window inside
-    /// this update would paint the new window's first frame mid-update, so the
-    /// window is opened once this one has finished drawing.
+    /// A prompt is its own window, and opening it inside this update would paint
+    /// its first frame mid-update, so it is deferred.
     fn prompt_save_then_close(
         &mut self,
         document: Entity<DocumentPanel>,
@@ -656,8 +544,7 @@ impl AppShell {
         ];
 
         let answered = dialog::open(window, cx, options, actions);
-        // The prompt acts on the owner window — the tree reveal and the editor
-        // focus both need it — so the answer comes back through its handle.
+        // The answer acts on the owner window, so it comes back through its handle.
         let owner = window.window_handle();
         let shell = cx.weak_entity();
         cx.spawn_in(window, async move |_, cx| {
@@ -673,10 +560,8 @@ impl AppShell {
         .detach();
     }
 
-    /// Do what the save prompt asked for.
-    ///
-    /// A failed save cannot keep the prompt open — it is already gone — so it
-    /// reports in a second window and leaves the document dirty and open.
+    /// Do what the save prompt asked for. A failed save reports in a second
+    /// window, because the first one is already gone.
     fn apply_save_answer(
         &mut self,
         answer: SaveAnswer,
@@ -708,7 +593,6 @@ impl AppShell {
         cx: &mut Context<Self>,
     ) {
         let Some(next) = self.documents.remove(document) else {
-            // Nothing left to show.
             self.revealed = None;
             cx.emit(ActiveDocumentChanged);
             self.schedule_session_save(window, cx);
@@ -716,8 +600,7 @@ impl AppShell {
             return;
         };
 
-        // The tab that took its place is now what the centre shows, so the tree
-        // and the status bar have to hear about it.
+        // The replacement tab now owns the tree reveal and the event.
         let path = next.read(cx).path().to_path_buf();
         self.reveal(&path, window, cx);
         cx.emit(ActiveDocumentChanged);
@@ -725,10 +608,8 @@ impl AppShell {
         cx.notify();
     }
 
-    /// Show the tab menu at the pointer, for the tab at `ix`.
-    ///
-    /// Deferred for the same reason a prompt is: a popup window paints its first
-    /// frame before it opens, and this runs inside a click during a draw.
+    /// Show the tab menu at the pointer, for the tab at `ix`. Deferred because
+    /// a popup paints its first frame before it opens, and this runs in a draw.
     fn show_tab_menu(
         &mut self,
         at: (usize, Point<Pixels>),
@@ -785,10 +666,8 @@ impl AppShell {
         self.close_documents(command, ix, window, cx)
     }
 
-    /// Close what `command` names, given the tab the menu was opened on.
-    ///
-    /// A dirty document still prompts, one after another, rather than being
-    /// discarded: the menu says "close", not "discard".
+    /// Close what `command` names. A dirty document still prompts: the menu says
+    /// "close", not "discard".
     fn close_documents(
         &mut self,
         command: TabCommand,
@@ -806,11 +685,8 @@ impl AppShell {
         }
     }
 
-    /// Which tabs a menu command closes, out of `count` open ones.
-    ///
-    /// Its own function so the answer can be tested without a window: closing is
-    /// what prompts for unsaved work, so getting the set wrong is how a menu
-    /// loses someone's buffer.
+    /// Which tabs a menu command closes, out of `count` open ones. Its own
+    /// function so the answer can be tested without a window.
     fn tabs_to_close(count: usize, command: TabCommand, ix: usize) -> Vec<usize> {
         let all = 0..count;
         match command {
@@ -829,8 +705,7 @@ impl AppShell {
         cx.notify();
     }
 
-    /// Show a side pane by provider id, or hide the dock if it is already
-    /// showing it.
+    /// Show a side pane by provider id, or hide the dock if it already shows it.
     pub fn show_pane(
         &mut self,
         slot: PaneSlot,
@@ -877,16 +752,10 @@ impl AppShell {
             .update(cx, |workspace, cx| workspace.refresh(window, cx));
     }
 
-    /// Write the session after a short delay.
+    /// Write the session after a short delay, coalescing a drag's events.
     ///
-    /// A layout change arrives once per frame while a divider is dragged, so
-    /// writing on every event would rewrite the file dozens of times per
-    /// gesture. The debounce coalesces them; the newest write wins because each
-    /// task reads the layout when it fires rather than when it was spawned.
-    ///
-    /// A viewer calls this for the state only it knows about — the markdown
-    /// viewer's layout switch — because nothing else about that change reaches
-    /// the shell.
+    /// A viewer calls this for state only it knows about, which nothing else
+    /// would report.
     pub(crate) fn schedule_session_save(&mut self, window: &Window, cx: &mut Context<Self>) {
         // A save already pending covers this change too.
         if self.save_task.is_some() {
@@ -954,11 +823,8 @@ impl AppShell {
         }
     }
 
-    /// The width to lay a dock out at on the first frame.
-    ///
-    /// The group's own measurement wins once it has one, and is remembered as it
-    /// goes; before that — and while the dock is collapsed, which measures
-    /// nothing — the last width this saw is the answer.
+    /// The width to lay a dock out at on the first frame: the group's own
+    /// measurement once it has one, the last width seen before that.
     fn column_size(
         &mut self,
         slot: PaneSlot,
@@ -982,9 +848,6 @@ impl AppShell {
 }
 
 /// A framed area of the window: an optional header strip above a body.
-///
-/// The document centre draws through this; each dock draws its own frame in its
-/// `Render`, strip included.
 pub(crate) fn frame(
     id: &'static str,
     header: Option<AnyElement>,
@@ -1030,18 +893,17 @@ impl Render for AppShell {
         // Cheap after the first call; that one arms the first-paint mark.
         crate::logging::arm_first_paint(window);
 
-        // The docks exist before their widths are read: a dock that has not
-        // been created yet would read as collapsed.
+        // The docks exist before their widths are read, or a fresh dock reads
+        // as collapsed.
         let left = self.side(PaneSlot::Left, cx);
         let right = self.side(PaneSlot::Right, cx);
 
         let left_width = self.column_size(PaneSlot::Left, 0, LEFT_WIDTH, cx);
         let right_width = self.column_size(PaneSlot::Right, 2, RIGHT_WIDTH, cx);
 
-        // A closed dock's panel is hidden rather than clamped: a visible panel
-        // next to a strip still draws a divider, and a divider that cannot move
-        // anything is worse than none. The strip is drawn by the dock itself and
-        // re-parented into the centre row below, so it stays clickable.
+        // Hide a closed dock's panel rather than clamping it: a visible panel
+        // beside a strip still draws a divider. Its strip is re-parented into the
+        // centre row below, so it stays clickable.
         let left_open = left.read(cx).is_open();
         let right_open = right.read(cx).is_open();
 
@@ -1062,9 +924,7 @@ impl Render for AppShell {
             cx,
         );
 
-        // Everything read from the app is resolved into owned values first.
-        // The listeners above each need `cx` mutably, and one immutable borrow
-        // of the theme cannot overlap another.
+        // Owned values first: the listeners each need `cx` mutably.
         struct Chrome {
             background: gpui::Background,
             foreground: gpui::Hsla,
@@ -1127,13 +987,9 @@ impl Render for AppShell {
     }
 }
 
-/// Where to open the window: the bounds the session saved, if they are still on
-/// a display, or the default centred size.
+/// Where to open the window: the saved bounds if they still reach a display,
+/// the default centred size otherwise.
 ///
-/// A display can be unplugged between runs, and a window restored onto one that
-/// is gone opens where the user cannot see it — often with nothing to drag it
-/// back with. So a saved position has to still reach a display to be used at
-/// all, and the fallback when it does not is the default.
 pub fn opening_bounds(session: &SessionState, cx: &App) -> WindowBounds {
     let centred = || WindowBounds::centered(None, DEFAULT_WINDOW_SIZE, cx);
     let Some(saved) = session.window else {
@@ -1168,11 +1024,8 @@ pub fn opening_bounds(session: &SessionState, cx: &App) -> WindowBounds {
     }
 }
 
-/// The window's bounds as the session stores them.
-///
-/// Read through [`WindowBounds`] rather than the live rect: a maximised window
-/// reports its *restore* rect there — the size it should come back to when it is
-/// un-maximised — while its live rect is the whole screen.
+/// The window's bounds as the session stores them. A maximised window reports
+/// its restore rect through [`WindowBounds`], not its live rect.
 fn saved_bounds(window: &Window) -> SavedBounds {
     let bounds = window.window_bounds();
     let maximized = matches!(bounds, WindowBounds::Maximized(_));
@@ -1186,12 +1039,8 @@ fn saved_bounds(window: &Window) -> SavedBounds {
     }
 }
 
-/// Whether enough of `rect` lands on a display to be grabbable.
-///
-/// The title bar is the only part that can be dragged back, so this asks for a
-/// title-bar-sized overlap rather than for any overlap at all: a window whose
-/// bottom-right corner is visible but whose title bar is off the top of the
-/// screen cannot be moved.
+/// Whether enough of `rect` lands on a display to grab: the title bar is the
+/// only part that can drag it back.
 fn reaches_a_display(rect: Bounds<Pixels>, cx: &App) -> bool {
     cx.displays()
         .iter()

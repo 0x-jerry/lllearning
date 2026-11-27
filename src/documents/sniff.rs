@@ -1,10 +1,5 @@
 //! The file-type table, and the binary/size checks that decide whether a file
 //! can be opened at all.
-//!
-//! This is deliberately one small table rather than a trait per extension: the
-//! providers' `score` functions read it, so the knowledge of "what is a
-//! markdown file" lives in one place instead of being spread across four
-//! modules that could disagree.
 
 use super::Sniff;
 
@@ -13,8 +8,7 @@ use super::Sniff;
 pub enum FileKind {
     Image,
     Markdown,
-    /// The fallback the text viewer claims. Nothing constructs it today; it
-    /// exists so [`kind_for`] answers every extension rather than `None`.
+    /// The fallback the text viewer claims; nothing constructs it today.
     #[allow(dead_code)]
     Text,
 }
@@ -22,11 +16,8 @@ pub enum FileKind {
 /// Extensions that are markdown.
 const MARKDOWN: [&str; 3] = ["md", "markdown", "mdx"];
 
-/// Extensions that are images GPUI can decode.
-///
-/// The list matches the formats the image element accepts; anything else falls
-/// through to the text viewer, which reports a binary file rather than drawing
-/// a broken image.
+/// Extensions that are images GPUI can decode; anything else falls through to
+/// the text viewer.
 const IMAGE: [&str; 12] = [
     "png", "jpg", "jpeg", "gif", "webp", "bmp", "ico", "tif", "tiff", "avif", "svg", "qoi",
 ];
@@ -43,11 +34,8 @@ pub fn kind_of(ext: Option<&str>) -> Option<FileKind> {
     }
 }
 
-/// The tree-sitter language name for an extension.
-///
-/// The editor accepts these as `language(..)`; a name with no grammar behind it
-/// renders unhighlighted rather than failing, so this table only has to be
-/// right about the common cases. Extensions not listed are plain text.
+/// The tree-sitter language name for an extension. A name with no grammar behind
+/// it renders unhighlighted, so this only has to be right about the common cases.
 pub fn language_for(ext: Option<&str>) -> &'static str {
     match ext.unwrap_or("") {
         "rs" => "rust",
@@ -83,9 +71,6 @@ pub fn language_for(ext: Option<&str>) -> &'static str {
 }
 
 /// The display name of a language, for a viewer that reports one.
-///
-/// The tree-sitter names are lowercase identifiers; a reader writes the language
-/// as a word.
 pub fn language_label(language: &str) -> String {
     match language {
         "text" => "Plain Text".to_owned(),

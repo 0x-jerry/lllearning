@@ -1,17 +1,6 @@
-//! Puts the app's icon into the executable itself.
-//!
-//! Cargo links no resources of its own, so without this the exe carries the Rust
-//! logo: Explorer, the taskbar button and a portable copy all show an icon that
-//! is not the app. An icon is a Windows resource, and the only way into the
-//! binary is to compile a `.rc` into the link — which is what
-//! `assets/lllearning.rc` is for. It names `assets/icon.ico`, the artwork
-//! `assets/build-icon.ts` rasterises from `icon.svg` — the same file the window
-//! (`app/title_bar.rs`) and the tray embed — at 16 to 256 pixels, so Explorer has
-//! a crisp one at every zoom level.
-//!
-//! This is the one build step that is not about fonts, and it only applies to a
-//! Windows target: elsewhere there is no resource to link, and a `.lib` named on
-//! the link line would be a hard error.
+//! Puts the app's icon into the executable: an icon is a Windows resource, and
+//! the only way in is compiling `assets/lllearning.rc` into the link. Without it
+//! the exe carries the Rust logo.
 
 use std::path::Path;
 
@@ -21,14 +10,12 @@ pub fn embed(manifest: &Path) {
         return;
     }
 
-    // `rc.exe` resolves `icon.ico` from the `.rc`'s own directory, so the icon
-    // needs no path here; these are what cargo must rerun the script on.
+    // `rc.exe` resolves `icon.ico` from the `.rc`'s own directory.
     println!("cargo:rerun-if-changed=assets/lllearning.rc");
     println!("cargo:rerun-if-changed=assets/icon.ico");
 
-    // A toolchain without `rc.exe` is not an error here — the binary still
-    // links, just with the default icon — but a `.rc` that fails to compile is,
-    // because the result is exactly the iconless exe this replaces.
+    // A toolchain without `rc.exe` still links, with the default icon; a `.rc`
+    // that fails to compile does not, because the result is the iconless exe.
     let resource = manifest.join("assets/lllearning.rc");
     match embed_resource::compile(&resource, embed_resource::NONE).manifest_optional() {
         Ok(()) => {}

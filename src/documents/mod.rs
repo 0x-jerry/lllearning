@@ -1,21 +1,11 @@
-//! The document seam: who can display a given file, and how to open it.
+//! The document seam: which viewer opens a file, and how it is driven.
 //!
-//! The centre of the shell is a tab strip of documents. The *kind* of viewer is
-//! chosen by file type, never by the user, so opening a file means scoring every
-//! registered provider against what was sniffed from the disk and taking the
-//! best.
+//! A viewer is chosen by scoring every registered provider against what was
+//! sniffed from the disk. Adding one is a module plus a `register_document_provider`
+//! call.
 //!
-//! Adding a viewer is one module plus one [`register_document_provider`] call.
-//!
-//! # Why some members are `pub` but only exercised by tests
-//!
-//! A seam is a contract, and its contract is verified by tests rather than by
-//! every consumer using every method. [`providers`], [`provider_by_id`] and the
-//! `DocumentController` reload pair exist so a viewer can be driven uniformly
-//! and so the score table can be asserted; the binary itself reaches only the
-//! parts it needs. The dead-code lint cannot tell that difference, so it is
-//! allowed on those items rather than the API being trimmed to whatever the
-//! current call sites happen to use.
+//! Some members carry `#[allow(dead_code)]`: they are seam surface a test-drives
+//! or a future caller uses, which the lint cannot see.
 
 pub mod image;
 pub mod markdown;
@@ -75,17 +65,11 @@ impl Sniff {
     }
 }
 
-/// One line of a document's outline.
-///
-/// `line` is 1-based and is what a jump needs; `depth` is what indentation
-/// draws. The pane owns neither the text nor the parse, so both travel here.
+/// One line of a document's outline: `line` is 1-based, `depth` is indentation.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct OutlineEntry {
-    /// The label, without the syntax that produced it.
     pub label: String,
-    /// 0 for a top-level entry, 1 for a nested one, and so on.
     pub depth: usize,
-    /// The 1-based line the entry sits on.
     pub line: u32,
 }
 
@@ -93,34 +77,21 @@ pub struct OutlineEntry {
 pub struct OpenContext {
     /// The path, canonicalised.
     pub path: PathBuf,
-    /// What was sniffed, so a provider does not repeat the work.
     pub sniff: Sniff,
-    /// The shell, for a viewer that needs to drive the rest of the app — an
-    /// editor asks it to write the session when a setting changes.
+    /// For a viewer that drives the rest of the app, e.g. asks for a session write.
     pub shell: WeakEntity<AppShell>,
-    /// The workspace, for a viewer that wants to reveal its file.
     #[allow(dead_code)]
     pub workspace: Entity<Workspace>,
 }
 
-/// What a viewer wants to remember about itself between runs.
+/// What a viewer remembers about itself between runs, opaque to the shell.
 ///
-/// Each viewer defines the type it saves — `MarkdownViewState` is today's — and
-/// serialises it into this: the shell moves the value into the session file and
-/// back without ever looking inside, so the shape and the names in it belong to
-/// the viewer alone. The method pair takes no type parameter because a
-/// `dyn DocumentController` has to be able to hand one out.
-///
-/// Decoding is the viewer's cue to fall back to its defaults, never to fail an
-/// open: a value this build cannot read is a session written by another build,
-/// or one hand-edited (risk R12).
+/// A value this build cannot decode means the viewer falls back to its defaults,
+/// never that the open fails.
 pub type ViewState = serde_json::Value;
 
 /// Object-safe handle over a document viewer, so the shell can drive any of
-/// them uniformly.
-///
-/// The shell holds an `AnyView` and needs to ask about dirty state and to save;
-/// a trait object is what lets it do that without knowing the viewer type.
+/// them without knowing its type.
 pub trait DocumentController {
     /// Whether the buffer has unsaved changes.
     fn is_dirty(&self, cx: &App) -> bool;
@@ -146,17 +117,12 @@ pub trait DocumentController {
     fn accept_disk_change(&self, window: &mut Window, cx: &mut App);
 
     /// Note that the file changed on disk while the buffer had unsaved edits.
-    ///
-    /// The buffer is not touched: the panel shows a banner and the user decides
-    /// whether to reload.
+    /// The buffer is not touched: the panel shows a banner and the user decides.
     fn mark_stale(&self, cx: &mut App) {
         let _ = cx;
     }
 
-    /// The language the file is in, if the viewer has one.
-    ///
-    /// No chrome shows it since the footer went away, so this is seam surface a
-    /// future pane can read rather than something the shell calls today.
+    /// The language the file is in, if the viewer has one. Nothing draws it yet.
     #[allow(dead_code)]
     fn language(&self, cx: &App) -> Option<SharedString> {
         let _ = cx;
@@ -170,45 +136,30 @@ pub trait DocumentController {
         None
     }
 
-    /// The state the viewer wants restored next time, or `None` when the file
-    /// itself is all it needs.
-    ///
-    /// The shell writes it into the session without interpreting it; the viewer
-    /// decides both the shape and what a missing or unreadable value means.
+    /// The state the viewer wants restored next time, or `None` when the file is
+    /// all it needs.
     fn view_state(&self, cx: &App) -> Option<ViewState> {
         let _ = cx;
         None
     }
 
-    /// Apply what [`Self::view_state`] returned on the previous run.
-    ///
-    /// Called once, after the viewer is built. A value this build does not
-    /// understand leaves the viewer at its defaults rather than failing the
-    /// open. The window is here because a restored caret or wrap setting goes
-    /// back through the editor, which needs one.
+    /// Apply what [`Self::view_state`] returned on the previous run, once, after
+    /// the viewer is built. A value this build cannot read is ignored.
     fn restore_view_state(&self, state: &ViewState, window: &mut Window, cx: &mut App) {
         let _ = (state, window, cx);
     }
 
-    /// The outline of the document's contents, if this viewer has one.
+    /// The outline of the document, if this viewer has one: `None` when it cannot
+    /// outline itself, `Some(vec![])` when it can and the file has no entries.
     ///
-    /// `None` is the answer for every viewer that cannot outline itself, and it
-    /// is what keeps the outline pane from claiming a binary file has headings. `Some(vec![])` means "this viewer outlines, and this file
-    /// happens to have no entries" — the pane says so rather than the viewer
-    /// declining.
-    ///
-    /// It lives on the controller rather than the provider because the provider
-    /// is stateless: only the controller holds the live buffer, so only the
-    /// controller can outline what the user has typed but not yet saved.
+    /// It lives on the controller because only the controller holds the live
+    /// buffer.
     fn outline(&self, cx: &App) -> Option<Vec<OutlineEntry>> {
         let _ = cx;
         None
     }
 
     /// Move the caret to `line` (1-based), for an outline jump.
-    ///
-    /// The default does nothing, so a viewer that answers [`Self::outline`] but
-    /// does not implement this still shows a usable list.
     fn goto_line(&self, line: u32, window: &mut Window, cx: &mut App) {
         let _ = (line, window, cx);
     }
@@ -218,22 +169,16 @@ pub trait DocumentController {
 pub struct DocumentContent {
     pub view: AnyView,
     pub controller: Rc<dyn DocumentController>,
-    /// Subscribes the panel to its viewer's notifications.
+    /// Subscribes the panel to its viewer's notifications, re-broadcast as
+    /// [`DocumentEvent`]. `None` for a viewer whose contents never change under
+    /// the user.
     ///
-    /// A viewer calls `cx.notify()` on itself when its buffer changes, and the
-    /// panes watching the document — the outline, the footer — need to hear
-    /// that. They cannot: [`AnyView`] carries an entity id but GPUI has no
-    /// observe-by-id, so the handle has to be typed, and the only place the
-    /// concrete type is known is the provider that built it.
-    ///
-    /// `None` for a viewer whose contents never change under the user.
+    /// The handle has to be typed because GPUI has no observe-by-id, and only the
+    /// provider knows the concrete type.
     pub watch: Option<WatchView>,
 }
 
 /// A provider's way to subscribe the panel to its own view.
-///
-/// Called with the panel's context; the hook subscribes to the concrete view
-/// and re-broadcasts its `notify` as [`DocumentEvent`] on the panel.
 pub type WatchView = Box<dyn Fn(&mut Context<DocumentPanel>) -> Subscription>;
 
 impl DocumentContent {
@@ -345,9 +290,8 @@ pub fn register_builtins(cx: &mut App) {
     register_document_provider(cx, Rc::new(image::ImageProvider));
     register_document_provider(cx, Rc::new(markdown::MarkdownProvider));
     register_document_provider(cx, Rc::new(text::TextProvider));
-    // Last, and scoring below text: it only claims what text refused, so a
-    // binary or oversized file opens a panel that explains itself instead of
-    // doing nothing at all (risk R4's sibling case).
+    // Scores below text and claims only what text refused, so a binary file
+    // opens an explanation rather than nothing.
     register_document_provider(cx, Rc::new(refused::RefusedProvider));
 }
 
@@ -499,10 +443,8 @@ pub fn tab_title(path: &Path, dirty: bool) -> SharedString {
     }
 }
 
-/// A tab that shows one document.
-///
-/// The viewer inside is type-erased through [`DocumentController`], so the shell
-/// can hold a list of these without knowing what each one is.
+/// A tab that shows one document. The viewer is type-erased through
+/// [`DocumentController`].
 pub struct DocumentPanel {
     path: PathBuf,
     provider_id: &'static str,
@@ -514,12 +456,8 @@ pub struct DocumentPanel {
 
 impl EventEmitter<DocumentEvent> for DocumentPanel {}
 
-/// The panel's own event: its contents changed.
-///
-/// This is what lets a pane watch "whatever the user is editing" without knowing
-/// which viewer is behind it. The panel re-broadcasts its viewer's `notify`
-/// because a subscriber can only subscribe to a type it can name, and the
-/// viewer's type is erased by the time the shell holds it.
+/// The panel's own event: its contents changed, re-broadcast from its viewer so
+/// a pane can watch the active document without naming its type.
 #[derive(Clone, Copy, Debug)]
 pub struct DocumentEvent;
 
@@ -530,10 +468,7 @@ impl Focusable for DocumentPanel {
 }
 
 impl DocumentPanel {
-    /// Open `path` with the best provider.
-    ///
-    /// Returns `None` when no provider can show the file, which the caller
-    /// reports rather than leaving an empty tab behind.
+    /// Open `path` with the best provider, or `None` when none can show it.
     pub fn open(
         path: PathBuf,
         shell: WeakEntity<AppShell>,
@@ -562,8 +497,8 @@ impl DocumentPanel {
         );
 
         Some(cx.new(|cx| {
-            // Built after the panel exists: the provider's hook subscribes to
-            // its own view and hands the subscription back to be held here.
+            // The provider's hook subscribes to its own view and hands the
+            // subscription back to be held here.
             let watch = content.watch.as_ref().map(|watch| watch(cx));
             Self {
                 path,
@@ -609,11 +544,8 @@ impl Render for DocumentPanel {
     }
 }
 
-/// The stand-in for a document that could not be reopened.
-///
-/// A restored tab whose file is gone, or whose viewer is missing, keeps its tab
-/// and says so. Dropping it instead would read as a bug: the session named it,
-/// so the user expects to see it.
+/// The stand-in for a document that could not be reopened: its file is gone, or
+/// its viewer is. The tab is kept rather than dropped.
 pub struct MissingDocument {
     path: PathBuf,
     focus_handle: FocusHandle,
@@ -649,8 +581,7 @@ impl Render for MissingDocument {
     }
 }
 
-/// Drives [`MissingDocument`] like any other viewer, so the shell holds it the
-/// same way it holds a real one.
+/// Drives [`MissingDocument`] like any other viewer.
 struct MissingController {
     view: Entity<MissingDocument>,
 }
@@ -724,8 +655,7 @@ mod tests {
         registry
     }
 
-    /// The score table is the contract that decides what opens a file, so it is
-    /// asserted directly rather than through a window.
+    /// The score table decides what opens a file, so it is asserted directly.
     #[test]
     fn each_file_type_lands_on_the_viewer_it_should() {
         let registry = registry();

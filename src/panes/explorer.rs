@@ -1,8 +1,4 @@
-//! The explorer: the workspace folder's tree.
-//!
-//! A toolbar with the folder name and the actions that change it, then the
-//! lazily-loaded tree. Expanding a directory asks the workspace to read it;
-//! clicking a file asks the shell to open it.
+//! The explorer: the workspace folder's tree, with a toolbar that changes it.
 
 use gpui::base::TreeEvent;
 use gpui::component::{
@@ -70,10 +66,8 @@ impl ExplorerView {
     ) -> Self {
         let focus_handle = cx.focus_handle();
         let tree_state = workspace.read(cx).tree_state().clone();
-        // Both halves of a toggle arrive here: the tree flips the row and says
-        // which way, and the workspace keeps its cache in step. Ignoring
-        // `Collapsed` would leave the cache believing a folded directory is
-        // still open, and the next click would look like it did nothing.
+        // Both halves of a toggle arrive here. Ignoring `Collapsed` would leave
+        // the cache believing a folded directory is still open.
         let tree_events = cx.subscribe_in(
             &tree_state,
             window,
@@ -91,8 +85,7 @@ impl ExplorerView {
         }
     }
 
-    /// Read a directory's children when the tree opens it, and record what the
-    /// click did either way.
+    /// Read a directory's children when the tree opens it.
     fn on_toggled(
         &mut self,
         id: &SharedString,
@@ -200,10 +193,6 @@ impl Render for ExplorerView {
 }
 
 /// One tree row: an indent, a file-type icon, and the name.
-///
-/// The click is on the label, not the row, and it stops propagation: the base
-/// tree toggles a directory on any click, so a file's click has to be claimed
-/// before it reaches that handler (risk R6).
 fn row(
     entry: &gpui::base::TreeEntry,
     shell: &gpui::WeakEntity<AppShell>,
@@ -222,9 +211,7 @@ fn row(
     let depth = entry.depth();
     let foreground = cx.theme().foreground;
 
-    // A directory's folder glyph doubles as its expand/collapse indicator: the
-    // open and closed folders say the state, so a separate chevron would only
-    // repeat it. A file gets its language's glyph, from the nerd font.
+    // A directory's folder glyph doubles as its expand indicator.
     let icon = if is_dir {
         icons::folder_icon(expanded, 12.)
     } else {
@@ -243,11 +230,8 @@ fn row(
         </div>
     };
 
-    // The click goes on the whole row, not on the label: a click anywhere in a
-    // file's row should open it, and the row is what the pointer actually
-    // covers. A directory's click falls through to the tree, which toggles it
-    // (risk R6 — the row handler runs first, so a file claims the click before
-    // the tree's any-click toggle can fire).
+    // The click goes on the whole row, and a file claims it before the tree's
+    // any-click toggle can fire. A directory's click falls through to the tree.
     let list_item = ListItem::new(item.id.clone()).child(content);
     if is_dir {
         list_item

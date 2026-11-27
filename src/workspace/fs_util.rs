@@ -1,11 +1,5 @@
-//! Filesystem helpers shared by the workspace, the explorer and the document
-//! providers.
-//!
-//! Everything here is synchronous and pure; callers run it on the background
-//! executor. The two things this module owns that are easy to get wrong are
-//! **ordering** (a listing that jumps around between refreshes reads as a bug)
-//! and **path identity** (Windows hands out `\\?\` prefixes and mixes
-//! drive-letter case, so the same file can spell itself several ways).
+//! Synchronous filesystem helpers shared by the workspace, the explorer and the
+//! document providers: listing order and path identity.
 
 use std::{
     cmp::Ordering,
@@ -15,10 +9,7 @@ use std::{
 };
 
 /// How many entries of one directory are listed before the rest are dropped.
-///
-/// A directory with more children than this is not browsable in a side panel
-/// anyway, and an uncapped listing is how the UI thread ends up frozen on a
-/// network share (risk R8).
+/// An uncapped listing is how the UI freezes on a network share.
 pub const MAX_DIR_ENTRIES: usize = 5_000;
 
 /// The largest file the text viewer will open. Bigger files get an explanatory
@@ -29,17 +20,13 @@ pub const MAX_TEXT_BYTES: u64 = 8 * 1024 * 1024;
 pub const BINARY_SNIFF_BYTES: usize = 8 * 1024;
 
 /// Directory names never shown in the explorer, and whose events are ignored.
-///
-/// These are the three that make a source tree unreadable in practice. A
-/// `.gitignore`-aware filter is a later refinement; see [`super::watcher`].
 const IGNORED_DIRS: [&str; 3] = ["target", "node_modules", ".git"];
 
 /// One directory entry, as the tree needs it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DirEntryInfo {
     pub path: PathBuf,
-    /// The file name, for display. Kept separate from `path` because the tree
-    /// shows only the leaf and the full path is not the label.
+    /// The file name, for display.
     pub name: String,
     pub is_dir: bool,
 }
@@ -52,18 +39,13 @@ impl DirEntryInfo {
     }
 }
 
-/// Whether `name` is a hidden or vendored entry the explorer leaves out.
-///
-/// Hidden means "starts with a dot", which covers `.git`, `.venv` and the rest
-/// on every platform; Windows' hidden *attribute* is deliberately not consulted
-/// because it is not set on the dot-directories developers actually mean.
+/// Whether `name` is an entry the explorer leaves out: dot-directories and the
+/// vendored ones above.
 pub fn is_ignored_name(name: &str) -> bool {
     name.starts_with('.') || IGNORED_DIRS.contains(&name)
 }
 
 /// Whether a path, or any of its ancestors below `root`, is ignored.
-///
-/// Used by the watcher, which sees absolute paths rather than names.
 pub fn is_ignored_path(path: &Path, root: &Path) -> bool {
     path.strip_prefix(root)
         .unwrap_or(path)
@@ -75,17 +57,12 @@ pub fn is_ignored_path(path: &Path, root: &Path) -> bool {
 }
 
 /// Read one directory: directories first, then files, each group sorted
-/// case-insensitively by name.
-///
-/// The order is part of the contract — a listing whose order changes between
-/// refreshes makes the tree appear to shuffle — so it is fixed here rather than
-/// left to the filesystem. Returns at most [`MAX_DIR_ENTRIES`] entries and a
-/// flag saying whether the listing was cut short.
+/// case-insensitively. The order is fixed here rather than left to the
+/// filesystem, so a refresh does not shuffle the tree.
 pub fn read_dir_sorted(dir: &Path) -> io::Result<(Vec<DirEntryInfo>, bool)> {
     let mut entries = Vec::new();
     for entry in std::fs::read_dir(dir)? {
-        // A single unreadable entry (a dangling symlink, a permission we lack)
-        // must not fail the whole listing, or one bad file hides its siblings.
+        // One unreadable entry must not fail the whole listing.
         let Ok(entry) = entry else { continue };
         let name = entry.file_name().to_string_lossy().into_owned();
         if is_ignored_name(&name) {
@@ -103,10 +80,8 @@ pub fn read_dir_sorted(dir: &Path) -> io::Result<(Vec<DirEntryInfo>, bool)> {
     Ok((entries, truncated))
 }
 
-/// Resolve whether an entry is a directory, following symlinks.
-///
-/// `DirEntry::file_type` does not follow symlinks, so a link to a directory
-/// would be listed as a file and could not be expanded.
+/// Resolve whether an entry is a directory, following symlinks, which
+/// `DirEntry::file_type` does not.
 fn entry_is_dir(entry: &std::fs::DirEntry, path: &Path) -> bool {
     match entry.file_type() {
         Ok(kind) if kind.is_symlink() => std::fs::metadata(path).is_ok_and(|meta| meta.is_dir()),
@@ -115,10 +90,8 @@ fn entry_is_dir(entry: &std::fs::DirEntry, path: &Path) -> bool {
     }
 }
 
-/// Directories first, then case-insensitive name, then exact name.
-///
-/// The final comparison on the raw name keeps the order total: two names that
-/// differ only by case would otherwise compare equal and sort unstably.
+/// Directories first, then case-insensitive name, then exact name, so two names
+/// differing only by case still have a total order.
 fn compare_entries(left: &DirEntryInfo, right: &DirEntryInfo) -> Ordering {
     right
         .is_dir
@@ -132,13 +105,8 @@ fn compare_names(left: &str, right: &str) -> Ordering {
     folded.then_with(|| left.cmp(right))
 }
 
-/// A stable key for comparing two paths that name the same file.
-///
-/// On Windows this strips the `\\?\` verbatim prefix that `canonicalize`
-/// produces, maps `/` to `\`, and folds case, because `C:\Foo` and `c:\foo` are
-/// one file. On other platforms it is the path as written. The result is for
-/// comparison only — never open a file with it, since folding case destroys the
-/// real name.
+/// A stable key for comparing two paths that name the same file: Windows strips
+/// the `\\?\` prefix, maps `/` to `\` and folds case. Never open a file with it.
 pub fn path_key(path: &Path) -> String {
     let text = path.to_string_lossy();
     let stripped = strip_verbatim_prefix(&text);
@@ -160,8 +128,7 @@ fn strip_verbatim_prefix(text: &str) -> std::borrow::Cow<'_, str> {
         .strip_prefix(r"\\?\")
         .or_else(|| text.strip_prefix("//?/"))
     {
-        // `\\?\UNC\server\share` is the verbatim spelling of a network path;
-        // dropping only the prefix would leave `UNC\`, which is not a path.
+        // `\\?\UNC\server\share` is the verbatim spelling of a network path.
         if let Some(unc) = rest
             .strip_prefix("UNC\\")
             .or_else(|| rest.strip_prefix("UNC/"))
@@ -173,12 +140,8 @@ fn strip_verbatim_prefix(text: &str) -> std::borrow::Cow<'_, str> {
     std::borrow::Cow::Borrowed(text)
 }
 
-/// Whether a byte sample looks binary.
-///
-/// The test is a NUL byte in the sample, which is what "binary" means for the
-/// purpose that matters here: deciding whether a file can be put in a text
-/// buffer. UTF-16 text contains NULs and is therefore reported binary; that is
-/// the conservative answer, since opening it as UTF-8 would produce garbage.
+/// Whether a byte sample looks binary: a NUL byte. UTF-16 text counts as binary,
+/// which is the conservative answer.
 pub fn is_binary_sample(bytes: &[u8]) -> bool {
     bytes.contains(&0)
 }

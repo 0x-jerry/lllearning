@@ -1,24 +1,10 @@
 //! The side-pane seam: who may occupy a side slot, and how to build it.
 //!
-//! A side pane is a view plus the metadata the activity strip needs to offer it.
-//! Everything the shell does with a pane goes through this module, so adding a
-//! pane is a new file and one [`register_pane`] call — no edits to the shell.
-//!
-//! # Writing a pane
-//!
 //! A pane is an ordinary GPUI entity with a [`Focusable`] handle and a `Render`
-//! impl. That is the whole contract: the shell frames the built view in one of
-//! its docks, so nothing here knows how the pane is placed. `panes/explorer.rs`
-//! is the shortest complete example.
-//!
-//! A pane whose contents can leave the screen — the browser, whose page is a
-//! native child window that outlives the element placing it (risk R1b) — also
-//! supplies [`PaneContent::activation`], and the shell calls it whenever the
-//! pane is shown or hidden.
-//!
-//! A pane that remembers something between runs supplies a [`PaneController`]
-//! with it, and the dock asks it for that state when the session is written and
-//! hands it back when the pane is built.
+//! impl, handed back from [`PaneProvider::build`] as a [`PaneContent`]. A pane
+//! whose contents live outside the element tree supplies
+//! [`PaneContent::activation`]; a pane that remembers something supplies a
+//! [`PaneController`]. Adding one is a new file plus a [`register_pane`] call.
 
 pub mod browser;
 pub mod explorer;
@@ -45,39 +31,26 @@ impl PaneSlot {
 
 /// What a provider is handed when its panel is built.
 pub struct PaneContext {
-    /// The folder tree, for a pane that shows or changes it.
     pub workspace: gpui::Entity<Workspace>,
-    /// The shell, for a pane that drives the rest of the app.
     pub shell: gpui::WeakEntity<crate::app::shell::AppShell>,
 }
 
-/// What a pane wants to remember about itself between runs.
-///
-/// The same bargain the document viewers strike (`documents::ViewState`): the
-/// pane defines the shape, the dock moves the value into the session file and
-/// back without looking inside, and a value this build cannot decode leaves the
-/// pane at its defaults rather than failing to build it (risk R12).
+/// What a pane remembers between runs, opaque to the dock. A value this build
+/// cannot decode leaves the pane at its defaults.
 pub type ViewState = serde_json::Value;
 
-/// Object-safe handle over a side pane, so the dock can ask any of them what it
-/// wants kept without knowing the pane type.
-///
-/// A built pane is an [`AnyView`], which carries an entity id and nothing else;
-/// only the provider knows the concrete type, so only the provider can hand out
-/// this. Every method has a default, because most panes keep nothing.
+/// Object-safe handle over a side pane's saved state. Only the provider knows
+/// the concrete type, so only the provider can hand one out. Both methods have
+/// defaults, because most panes keep nothing.
 pub trait PaneController {
-    /// The state the pane wants back next run, or `None` when its view is all
-    /// it needs.
+    /// The state the pane wants back next run, or `None`.
     fn view_state(&self, cx: &App) -> Option<ViewState> {
         let _ = cx;
         None
     }
 
-    /// Apply what [`Self::view_state`] returned on the previous run.
-    ///
-    /// Called once, after the pane is built. A value this build does not
-    /// understand leaves the pane at its defaults rather than failing to build
-    /// it (risk R12).
+    /// Apply what [`Self::view_state`] returned on the previous run, once, after
+    /// the pane is built.
     fn restore_view_state(&self, state: &ViewState, window: &mut Window, cx: &mut App) {
         let _ = (state, window, cx);
     }
@@ -89,14 +62,12 @@ pub struct StatelessPane;
 impl PaneController for StatelessPane {}
 
 /// Called with `true` when the pane is placed on screen and `false` when it
-/// leaves.
-///
-/// A pane that owns something the element tree does not — the browser's native
-/// child window — is what this exists for; every other pane ignores it.
+/// leaves. For panes that own something the element tree does not, such as the
+/// browser's native child window.
 pub type Activation = Rc<dyn Fn(bool, &mut Window, &mut App)>;
 
-/// What a provider returns: the view, its controller, and how to tell it it
-/// left the screen.
+/// What a provider returns: the view, its controller, and how to tell it it left
+/// the screen.
 pub struct PaneContent {
     pub view: AnyView,
     pub controller: Rc<dyn PaneController>,
@@ -115,12 +86,8 @@ impl PaneContent {
 }
 
 /// A kind of side pane.
-///
-/// One implementation per pane type. The registry keeps them; the shell reads
-/// the list to draw the activity strip and to build a dock's pane.
 pub trait PaneProvider: 'static {
-    /// Stable id, written into the session file. Never rename one: a session
-    /// naming the old id comes back with no pane in that dock.
+    /// Stable id, written into the session file; never rename one.
     fn id(&self) -> &'static str;
 
     /// The name shown in the strip's tooltip.
@@ -137,10 +104,8 @@ pub trait PaneProvider: 'static {
         0
     }
 
-    /// Build the pane's view.
-    ///
-    /// Runs on the render thread, so a provider that starts something expensive
-    /// must start it and return, not wait for it.
+    /// Build the pane's view. Runs on the render thread, so anything expensive
+    /// must be started and awaited elsewhere.
     fn build(&self, ctx: PaneContext, window: &mut Window, cx: &mut App) -> PaneContent;
 }
 

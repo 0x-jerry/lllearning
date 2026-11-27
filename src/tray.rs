@@ -36,7 +36,7 @@ impl Tray {
     }
 }
 
-/// Closing the window must not end the app: the tray stays until Quit is chosen.
+/// Closing the window must not end the app: the tray stays until Quit.
 pub(crate) fn quit_mode() -> QuitMode {
     QuitMode::Explicit
 }
@@ -44,8 +44,8 @@ pub(crate) fn quit_mode() -> QuitMode {
 /// Keeps the window alive on close, so the tray can bring it back.
 pub(crate) fn keep_window_on_close(window: &gpui::Window, cx: &App) {
     window.on_window_should_close(cx, |window, _| {
-        // Hide rather than minimize: the app lives in the tray, so it should not
-        // keep a taskbar entry while it has no window on screen.
+        // Hide rather than minimize: the app lives in the tray, so it keeps no
+        // taskbar entry while it has no window.
         crate::window::hide(window);
         false
     });

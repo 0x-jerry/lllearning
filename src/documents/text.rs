@@ -1,9 +1,5 @@
-//! The text and code viewer.
-//!
-//! One `EditorState` per document, with the language chosen from the extension.
-//! Dirty tracking is an `InputEvent::Change` subscription, and a restore goes
-//! through `EditorState::set_value`, which the framework documents as emitting
-//! no change event — so a restored tab is not born dirty (risk R10).
+//! The text and code viewer: one `EditorState` per document, with the language
+//! chosen from the extension. Only `InputEvent::Change` marks a buffer dirty.
 
 use std::{
     path::{Path, PathBuf},
@@ -29,22 +25,17 @@ use super::{
 };
 use crate::app::shell::AppShell;
 
-/// Scores: high enough that nothing else claims a text file by accident, low
+/// Scores high enough that nothing else claims a text file by accident, low
 /// enough that every specific provider beats it.
 const SCORE: u8 = 10;
 
-/// The key context the editor panes put on their root element.
-///
-/// Bindings scoped to this context reach a document viewer and nothing else, so
-/// `ctrl-s` cannot be swallowed by an unrelated input elsewhere in the window.
+/// The key context the editor panes put on their root element, so `ctrl-s`
+/// reaches them and nothing else.
 pub const DOCUMENT_CONTEXT: &str = "DocumentViewer";
 
 gpui::actions!(lllearning, [SaveDocument]);
 
 /// Bind `ctrl-s` (and `cmd-s` on macOS) to [`SaveDocument`].
-///
-/// `ctrl-s` is unbound everywhere in the framework, so claiming it here does not
-/// shadow anything. The binding is registered once, at startup.
 pub fn bind_keys(cx: &mut App) {
     cx.bind_keys([
         gpui::KeyBinding::new("ctrl-s", SaveDocument, Some(DOCUMENT_CONTEXT)),
@@ -65,10 +56,8 @@ impl DocumentProvider for TextProvider {
     }
 
     fn score(&self, path: &Path, sniff: &Sniff) -> Option<u8> {
-        // Binary and oversized files are refused by this provider: the panel
-        // would have nothing to show, and the refusal is the honest answer.
-        // They still open — `RefusedProvider` claims them below and explains
-        // why.
+        // Binary and oversized files are refused here; `RefusedProvider` claims
+        // them and explains why.
         if sniff::text_refusal(sniff).is_some() {
             return None;
         }
@@ -162,8 +151,6 @@ impl DocumentController for TextController {
     }
 
     fn view_state(&self, cx: &App) -> Option<super::ViewState> {
-        // A state that cannot be encoded is a wiring bug, not something the
-        // user did: log it and let the tab reopen at its defaults next time.
         let view = self.view.read(cx);
         match serde_json::to_value(TextViewState {
             wrap: Some(view.wrap),
@@ -178,8 +165,7 @@ impl DocumentController for TextController {
     }
 
     fn restore_view_state(&self, state: &super::ViewState, window: &mut Window, cx: &mut App) {
-        // A value this build does not understand leaves the default in place
-        // rather than failing the open (risk R12).
+        // A value this build does not understand leaves the defaults in place.
         let Ok(state) = serde_json::from_value::<TextViewState>(state.clone()) else {
             return;
         };
@@ -187,33 +173,23 @@ impl DocumentController for TextController {
             view.wrap = state.wrap.unwrap_or(true);
             view.editor.update(cx, |editor, cx| {
                 editor.set_soft_wrap(view.wrap, window, cx);
-                // Moving the caret is not an edit: `set_cursor_position` emits
-                // no change, so a restored tab is not born dirty (risk R10).
-                // It also focuses the editor, which the shell corrects by
-                // focusing the active tab once every document is restored.
+                // Moving the caret is not an edit, so a restored tab stays clean.
                 if let Some(position) = state.cursor {
                     editor.set_cursor_position(position, window, cx);
                 }
             });
-            // The caret moved under the status bar's feet, so the position it
-            // redraws from is taken again rather than left behind.
             view.last_cursor = view.editor.read(cx).cursor_position();
             cx.notify();
         });
     }
 }
 
-/// What the text viewer keeps between runs.
-///
-/// Its own type, so the session file's shape is spelled here rather than in the
-/// shell. The optional fields are what a session written before they existed
-/// leaves out; each then falls back to what a fresh tab would do.
+/// What the text viewer keeps between runs. Optional fields are what an older
+/// session leaves out; each falls back to a fresh tab's default.
 #[derive(serde::Serialize, serde::Deserialize)]
 struct TextViewState {
-    /// Soft wrap, as the status bar's switch left it.
     #[serde(default)]
     wrap: Option<bool>,
-    /// Where the caret was, so a long file reopens where it was left.
     #[serde(default)]
     cursor: Option<Position>,
 }
@@ -224,19 +200,14 @@ pub struct TextView {
     language: &'static str,
     editor: Entity<EditorState>,
     focus_handle: FocusHandle,
-    /// Whether the buffer differs from the file.
     dirty: bool,
     /// Whether the file changed on disk while the buffer was clean.
     stale: bool,
-    /// The caret position the status bar was last drawn for, so a notify that
-    /// does not move the caret does not redraw the view.
+    /// The caret position the status bar was last drawn for.
     last_cursor: Position,
-    /// Whether the editor wraps long lines, as the status bar's switch leaves it.
     wrap: bool,
-    /// The shell, because the wrap choice is part of the session and only the
-    /// shell writes that file (see [`Self::toggle_wrap`]).
+    /// The wrap choice is written to the session by the shell.
     shell: WeakEntity<AppShell>,
-    /// Dropped with the view, so the subscription does not outlive it.
     _change: Subscription,
     _cursor: Subscription,
 }
@@ -250,23 +221,17 @@ impl TextView {
         cx: &mut Context<Self>,
     ) -> Self {
         let focus_handle = cx.focus_handle();
-        // Only `Change` marks the buffer dirty: `set_value` suppresses it, so a
-        // restore cannot mark a freshly opened tab as modified.
         let change = cx.subscribe(&editor, |this: &mut Self, _, event: &InputEvent, cx| {
             if matches!(event, InputEvent::Change) {
                 this.dirty = true;
-                // The panel re-broadcasts this, so a pane showing something
-                // derived from the buffer (the outline) follows the typing.
+                // The panel re-broadcasts this to panes derived from the buffer.
                 cx.emit(());
                 cx.notify();
             }
         });
 
         let last_cursor = editor.read(cx).cursor_position();
-        // The status bar shows the caret, and the editor emits no event for a
-        // move that changes no text. It does notify, but also for things that
-        // leave the caret where it is (its blink cycle runs off its own
-        // entity), so this redraws only when the position actually moved.
+        // The editor notifies on its blink cycle too, so redraw only on a move.
         let cursor = cx.observe(&editor, |this: &mut Self, editor, cx| {
             let position = editor.read(cx).cursor_position();
             if position != this.last_cursor {
@@ -308,14 +273,12 @@ impl TextView {
         };
         self.dirty = false;
         self.stale = false;
-        // Saving writes the buffer out, and the watcher reports that write as a
-        // disk change; replacing the buffer with its own text would reset the
-        // caret and the scroll on every save.
+        // The watcher reports our own save as a disk change; resetting the buffer
+        // to its own text would drop the caret and the scroll on every save.
         if self.editor.read(cx).value().as_ref() == text {
             cx.notify();
             return;
         }
-        // `set_value` emits no `Change`, so this cannot re-dirty the buffer.
         self.editor
             .update(cx, |editor, cx| editor.set_value(text, window, cx));
         cx.notify();
@@ -369,8 +332,6 @@ impl Render for TextView {
                 class="flex flex-col size-full"
                 key_context={DOCUMENT_CONTEXT}
                 onAction={cx.listener(|this, _: &SaveDocument, window, cx| {
-                    // A save that fails is reported rather than swallowed: the
-                    // tab must not lose its dirty marker on a failed write.
                     if let Err(error) = this.save(window, cx) {
                         log::error!("{error}");
                     }

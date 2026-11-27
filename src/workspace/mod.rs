@@ -1,17 +1,6 @@
 //! The workspace: which folder is open, its tree, and its change notifications.
-//!
-//! This is one of the three seams the shell knows about. It owns the folder
-//! root, the lazily-read directory cache ([`tree::DirTree`]), the `TreeState`
-//! the explorer renders, and the filesystem watcher. Nothing above it reaches
-//! into the filesystem directly.
-//!
-//! # Why some members are `pub` but only exercised by tests
-//!
-//! The workspace's readers — [`Workspace::tree`], the path predicates, the
-//! synchronous [`tree::load_expanded`] — are part of the seam's contract and are
-//! asserted by unit tests rather than by every call site in the binary. The
-//! dead-code lint cannot see a test-only consumer, so it is allowed on those
-//! items rather than trimming the API to whatever the current UI happens to touch.
+//! It owns the root, the lazy directory cache, the `TreeState` the explorer
+//! renders, and the filesystem watcher.
 
 pub mod fs_util;
 pub mod tree;
@@ -41,16 +30,12 @@ pub enum WorkspaceEvent {
 
 /// The workspace folder, its tree, and its watcher.
 pub struct Workspace {
-    /// The open folder. `None` until one is picked, or after the user clears it.
     root: Option<PathBuf>,
     tree: DirTree,
-    /// The tree the explorer renders. Owned here so a rebuild from any caller
-    /// reaches the same widget.
     tree_state: Entity<TreeState>,
-    /// The recursive watcher, rebuilt whenever the root changes.
+    /// Rebuilt whenever the root changes.
     watcher: Option<watcher::FileWatcher>,
-    /// The task draining the watcher's channel into events. Held so dropping
-    /// the workspace stops the drain.
+    /// The task draining the watcher's channel; dropped with the workspace.
     watcher_task: Option<Task<()>>,
 }
 
@@ -93,15 +78,9 @@ impl Workspace {
         self.watcher.is_some()
     }
 
-    /// Open `path` as the workspace folder.
-    ///
-    /// Canonicalises first, so every path derived from the root is absolute and
-    /// free of `..`. A folder that no longer exists is reported rather than
-    /// left as a broken root.
-    ///
-    /// The folder's listing and its watcher are read on the background
-    /// executor (risk R8). The root is published immediately, so the panes that
-    /// read it are not held up, and the tree fills in when the listing lands.
+    /// Open `path` as the workspace folder. The root is published immediately
+    /// and the listing and watcher are read on the background executor, so a
+    /// network share does not freeze the window.
     pub fn set_root(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
         let canonical = match std::fs::canonicalize(&path) {
             Ok(canonical) => canonical,
@@ -114,11 +93,8 @@ impl Workspace {
             }
         };
 
-        // `read_dir` used to happen here, to prove the folder was readable
-        // before it was published. It is the same `read_dir` the background read
-        // below performs, so it happens once, there — but a root that cannot be
-        // read at all is still refused up front, because publishing it would
-        // leave a folder in the tree that can never be expanded.
+        // A root that cannot be read at all is refused up front, or publishing it
+        // would leave a folder in the tree that can never be expanded.
         if let Err(error) = std::fs::read_dir(&canonical) {
             cx.emit(WorkspaceEvent::Error(format!(
                 "{} could not be read: {error}",
@@ -147,9 +123,8 @@ impl Workspace {
                 .await;
             let _ = this.update_in(cx, |this, _, cx| {
                 let (dir, children, truncated) = listing;
-                // An empty listing for a directory that cannot be read is how
-                // `read_listing` reports a failure, so the root is only accepted
-                // when it produced something or is genuinely empty on disk.
+                // An empty listing for an unreadable directory is how
+                // `read_listing` reports failure.
                 if children.is_empty() && !dir.is_dir() {
                     cx.emit(WorkspaceEvent::Error(format!(
                         "{} could not be read",
@@ -179,10 +154,8 @@ impl Workspace {
         cx.notify();
     }
 
-    /// Ask the user for a folder and open it.
-    ///
-    /// The picker is a platform modal, so the answer arrives asynchronously;
-    /// the workspace entity is kept alive across the wait by the weak handle.
+    /// Ask the user for a folder and open it. The picker is a platform modal, so
+    /// the answer arrives asynchronously.
     pub fn pick_root(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let receiver = cx.prompt_for_paths(PathPromptOptions {
             files: false,
@@ -194,7 +167,6 @@ impl Workspace {
         cx.spawn_in(window, async move |this, cx| {
             let picked = match receiver.await {
                 Ok(Ok(Some(paths))) => paths.into_iter().next(),
-                // Cancelled: nothing to do, and nothing to report.
                 Ok(Ok(None)) => None,
                 Ok(Err(error)) => {
                     let message = format!("the folder picker failed: {error}");
@@ -219,10 +191,6 @@ impl Workspace {
 
     /// Open or close a directory the user clicked, reading its children if it
     /// was opened for the first time.
-    ///
-    /// The tree has already toggled the row and reported which way it went;
-    /// this records that in the cache and reads the directory if it is being
-    /// opened for the first time.
     pub fn toggle_dir(
         &mut self,
         dir: PathBuf,
@@ -293,13 +261,9 @@ impl Workspace {
         }
     }
 
-    /// Highlight `path` and open the folders leading to it.
-    ///
-    /// The folders are read on the background executor, like every other
-    /// listing (risk R8): a reveal into a directory that was never expanded has
-    /// to read it, and doing that inline would freeze the window on a network
-    /// share. The selection and the scroll happen once those listings land, so
-    /// the tree never shows a highlight on a row it has not built yet.
+    /// Highlight `path` and open the folders leading to it, reading what it
+    /// needs on the background executor. The selection and scroll happen once
+    /// those listings land, so the tree never highlights a row it has not built.
     pub fn reveal(&mut self, path: &Path, window: &mut Window, cx: &mut Context<Self>) {
         self.tree.reveal(path);
         self.rebuild_tree_state(cx);
@@ -332,11 +296,8 @@ impl Workspace {
         .detach();
     }
 
-    /// Scroll the tree so the selected row is on screen.
-    ///
-    /// Only a reveal does this: a refresh or a watcher rebuild keeps the scroll
-    /// where the user left it, or the tree would jump under them every time a
-    /// file changed on disk.
+    /// Scroll the tree so the selected row is on screen. Only a reveal does
+    /// this, so a watcher rebuild does not jump the tree under the user.
     fn scroll_to_selection(&mut self, cx: &mut Context<Self>) {
         let selected = self
             .tree
@@ -362,8 +323,7 @@ impl Workspace {
         let tree_state = self.tree_state.clone();
         tree_state.update(cx, |state, cx| {
             state.set_items(items, cx);
-            // `set_items` clears the selection (risk R5), so it is restored here
-            // from the cache rather than left to the click handler.
+            // `set_items` clears the selection, so it is restored from the cache.
             if let Some(id) = selected
                 && let Some(ix) = state.index_of(&id)
             {
@@ -372,12 +332,8 @@ impl Workspace {
         });
     }
 
-    /// Start watching `root`, replacing any previous watcher.
-    ///
-    /// The watch is registered on the background executor: `notify` walks the
-    /// tree to install a recursive watch, which is a filesystem call like any
-    /// other and does not belong on the UI thread (risk R8). The status bar
-    /// reads `is_watching`, so the watcher is only published once it exists.
+    /// Start watching `root`, replacing any previous watcher. The watch is
+    /// installed on the background executor, because `notify` walks the tree.
     fn restart_watcher(&mut self, root: &Path, window: &Window, cx: &mut Context<Self>) {
         // Dropping these stops the old watch and its drain task.
         self.watcher = None;
@@ -428,9 +384,8 @@ impl Workspace {
             return;
         };
 
-        // The tree only cares about directories whose listing is cached and
-        // shown: an unread directory is read correctly when it is expanded, and
-        // a closed one is re-read on expand only if invalidated.
+        // Only cached, shown directories need rebuilding: an unread one is read
+        // correctly when it is expanded.
         let mut changed_dirs = Vec::new();
         for path in paths {
             if fs_util::is_ignored_path(path, &root) {
@@ -443,8 +398,7 @@ impl Workspace {
                 path.parent().unwrap_or(path).to_path_buf()
             };
             // A closed directory's cache must still be dropped, or reopening it
-            // would show a stale listing; only the rebuild is limited to the
-            // directories actually on screen.
+            // would show a stale listing.
             self.tree.invalidate(&dir);
             if self.tree.is_expanded(&dir) {
                 changed_dirs.push(dir);
@@ -493,10 +447,7 @@ mod tests {
         assert_eq!(root_label(Path::new("/a/b/lllearning")), "lllearning");
     }
 
-    /// Build an empty throwaway folder.
-    ///
-    /// `tag` must differ between calls in one test: the thread id is the same,
-    /// so the tag is what keeps two folders from sharing a path.
+    /// Build an empty throwaway folder. `tag` keeps two folders in one test apart.
     fn temp_workspace(tag: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(
             "lllearning-ws-{tag}-{}-{:?}",
@@ -508,10 +459,7 @@ mod tests {
         dir
     }
 
-    /// Changing the folder replaces the tree and drops the old one.
-    ///
-    /// The folder switch is the half of the flow that does not need a platform
-    /// folder picker: `set_root` is what the picker's reply calls.
+    /// The folder switch is `set_root`, which is what the picker's reply calls.
     #[test]
     fn changing_the_root_replaces_the_tree() {
         let first = temp_workspace("first");

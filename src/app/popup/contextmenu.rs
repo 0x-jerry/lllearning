@@ -1,15 +1,8 @@
-//! A context menu: a list of commands shown next to the thing that was
-//! right-clicked.
+//! A context menu: commands beside the thing that was right-clicked. It is a
+//! small frameless window of its own, placed at the pointer and owned by its
+//! opener, because an in-window menu is covered by the browser pane.
 //!
-//! An in-window menu is covered by the browser pane's native child window, so
-//! this is a small frameless window of its own, placed at the pointer and owned
-//! by the window it was opened from (risk R17). It is the same technique as
-//! [`super::dialog`], without the chrome: no caption, no controls, just the
-//! items.
-//!
-//! It closes itself when it loses focus, which is what every other menu on the
-//! desktop does: a click anywhere else is the dismissal, and it needs no
-//! hit-testing of its own.
+//! It closes itself when it loses focus, which needs no hit-testing.
 
 use std::cell::Cell;
 use std::rc::Rc;
@@ -33,7 +26,6 @@ pub struct MenuItem<T> {
     pub id: &'static str,
     pub label: SharedString,
     pub value: T,
-    /// Drawn greyed and refuses activation.
     pub disabled: bool,
     /// Draws a separator above this item.
     pub separated: bool,
@@ -68,7 +60,6 @@ impl<T> MenuItem<T> {
 pub struct MenuOptions {
     /// Where the pointer was, in the owner's window coordinates.
     pub at: Point<Pixels>,
-    /// A width for the menu; the height follows the items.
     pub width: Pixels,
 }
 
@@ -82,13 +73,9 @@ impl MenuOptions {
     }
 }
 
-/// Show `items` at `options.at` and resolve with the chosen one.
+/// Show `items` at `options.at` and resolve with the chosen one. `None` means it
+/// was dismissed: a click elsewhere, or Escape.
 ///
-/// `None` means the menu was dismissed without a choice — a click elsewhere, or
-/// Escape.
-///
-/// See [`super::open`] for the calling rules: not from inside a draw, and keep
-/// the returned task alive.
 pub fn open<T: Clone + 'static>(
     owner: &Window,
     cx: &mut App,
@@ -116,7 +103,7 @@ struct ContextMenu<T> {
     focus: Option<FocusHandle>,
     items: Vec<MenuItem<T>>,
     host: Host<T>,
-    /// Dropping this unsubscribes, so the menu leaves no observer behind.
+    /// Dropping this unsubscribes the activation observer.
     _activation: Option<gpui::Subscription>,
     /// The owner's top-left on screen, so the menu lands under the pointer.
     origin: Point<Pixels>,
@@ -140,7 +127,6 @@ impl<T: Clone + 'static> ContextMenu<T> {
     fn height(&self) -> Pixels {
         let rows = self.items.len() as f32;
         let separators = self.items.iter().filter(|item| item.separated).count() as f32;
-        // The padding above the first row and below the last.
         Self::ROW_HEIGHT * rows + px(1.) * separators + px(8.)
     }
 }
@@ -156,9 +142,7 @@ impl<T: Clone + 'static> Popup for ContextMenu<T> {
                 size,
             ))),
             window_min_size: Some(size),
-            // A tool window from birth: it has no taskbar button and no Alt-Tab
-            // entry, so none has to be taken away after it is shown. Windows takes
-            // its ownership from the Win32 call the host makes.
+            // A tool window from birth: no taskbar button and no Alt-Tab entry.
             kind: WindowKind::PopUp,
             is_resizable: false,
             is_minimizable: false,
@@ -176,13 +160,11 @@ impl<T: Clone + 'static> Popup for ContextMenu<T> {
     fn opened(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let focus = cx.focus_handle();
         self.focus = Some(focus.clone());
-        // A click anywhere else lands on another window and takes the activation
-        // with it, which is the dismissal every other menu on the desktop has.
-        // No hit-testing of our own, and it covers a click on the owner too.
+        // Losing the activation is the dismissal, as every desktop menu does.
         //
         // Armed from the state the window is already in: it is created shown and
-        // active, so the activation it arrived with may never be reported, and a
-        // menu that is not armed never leaves.
+        // active, so that activation may never be reported, and a menu that is
+        // never armed never leaves.
         let armed = Rc::new(Cell::new(window.is_window_active()));
         self._activation = Some(cx.observe_window_activation(window, move |_, window, _| {
             if window.is_window_active() {

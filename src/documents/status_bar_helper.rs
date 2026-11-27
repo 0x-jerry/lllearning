@@ -1,26 +1,11 @@
-//! What an editor viewer puts in its status bar.
+//! What an editor viewer puts in its status bar: the file type on the left, the
+//! caret and the buffer's counts on the right, and the switches (wrap, layout)
+//! every editor viewer needs. The row itself is the component library's
+//! [`StatusBar`].
 //!
-//! The row itself is the component library's
-//! [`StatusBar`](gpui::component::status_bar::StatusBar) — three pinned regions
-//! and any `IntoElement`s in them. This file is the seam above it: a viewer
-//! that has a buffer and a caret calls [`editor_status_bar`] instead of spelling
-//! the same four items again, and gets the file type on the left and the caret
-//! and the buffer's size on the right. Actions go on afterwards, with the
-//! library's own builder:
-//!
-//! ```ignore
-//! let bar = editor_status_bar(cx, "Markdown", &text, cursor).right(layout_switch);
-//! ```
-//!
-//! The counts are derived from the buffer on every call, so there is no second
-//! copy of them to fall out of step, and nothing is cached: one pass over the
-//! buffer is the whole cost. What it does *not* do is ask to be redrawn — a
-//! viewer whose caret can move without the buffer changing has to re-render
-//! itself (`MarkdownView::new` compares the position for exactly that reason).
-//!
-//! The switches an editor viewer puts in that bar live here too, because every
-//! one of them needs the same three things: the glyph, the tint that says which
-//! state it is in, and the request for a session write ([`request_session_save`]).
+//! The counts come from the buffer on every call, so they cannot drift; the bar
+//! does not ask to be redrawn, so a viewer whose caret moves without the buffer
+//! changing has to re-render itself.
 
 use gpui::component::{
     ActiveTheme as _,
@@ -35,12 +20,7 @@ use gpui_rsx::rsx;
 
 use crate::{app::shell::AppShell, icons};
 
-/// The status bar for `text`, shown as `file_type`.
-///
-/// `cursor` is 1-based (line, column), the way a reader counts lines; `None`
-/// leaves the position out, for a viewer with no caret to report. The file type
-/// is drawn in the foreground colour, which is the one thing the library bar
-/// does not do: it tints everything in it as secondary text.
+/// The status bar for `text`, shown as `file_type`. `cursor` is 1-based.
 pub fn editor_status_bar(
     cx: &App,
     file_type: impl Into<SharedString>,
@@ -62,11 +42,8 @@ pub fn editor_status_bar(
         )))
 }
 
-/// The status bar's switch for the editor's soft wrap.
-///
-/// Both states draw the same glyph, so the tint carries the state: wrapped is
-/// the foreground colour, unwrapped the bar's own muted one. Only the view can
-/// reach its editor, so the click is the caller's.
+/// The status bar's switch for the editor's soft wrap: both states share the
+/// glyph, so the tint carries the state.
 pub fn wrap_switch(
     cx: &App,
     wrap: bool,
@@ -79,8 +56,7 @@ pub fn wrap_switch(
         glyph
     };
 
-    // The square is spelled in `class` rather than with `xsmall`: that variant's
-    // padding does not fit a status bar item.
+    // `class` rather than `xsmall`: that variant's padding does not fit a status bar item.
     rsx! {
         <Button("editor-wrap")
             ghost
@@ -93,31 +69,22 @@ pub fn wrap_switch(
     }
 }
 
-/// Ask the shell to write the session.
-///
-/// A viewer's own settings — the wrap switch, the markdown layout — change
-/// nothing the shell is watching for, and the quit hook alone is not enough
-/// because anything that kills the app never reaches it. Every switch that a
-/// `view_state` restores calls this, or it is only saved by the next unrelated
-/// write.
+/// Ask the shell to write the session. A switch's setting changes nothing the
+/// shell is watching for, and the quit hook alone is not enough because a killed
+/// process never reaches it.
 pub fn request_session_save(shell: &WeakEntity<AppShell>, window: &mut Window, cx: &mut App) {
     // A shell that is gone has nothing to write; the change itself still stands.
     let _ = shell.update(cx, |shell, cx| shell.schedule_session_save(window, cx));
 }
 
-/// How many lines the editor draws for `text`.
-///
-/// The count is the `\n`s plus one, so a buffer ending in a newline has the
-/// empty line the editor shows for it rather than one fewer.
+/// How many lines the editor draws for `text`: the `\n`s plus one, so a buffer
+/// ending in a newline has the empty line the editor shows.
 fn line_count(text: &str) -> usize {
     text.split('\n').count()
 }
 
-/// The characters in `text`, excluding the line breaks.
-///
-/// The breaks are already counted by [`line_count`] and are not characters a
-/// reader counts: the two numbers are meant to be read side by side, and a CRLF
-/// counted as two would make them disagree with what the editor shows.
+/// The characters in `text`, excluding the line breaks, which are already counted
+/// by [`line_count`].
 fn character_count(text: &str) -> usize {
     text.chars()
         .filter(|character| !matches!(character, '\n' | '\r'))

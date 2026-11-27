@@ -1,6 +1,5 @@
 //! Shared plumbing: finding a dependency's files, subsetting, and the small
 //! filesystem helpers both font modules need.
-
 use std::{
     env, fs,
     path::{Path, PathBuf},
@@ -14,13 +13,11 @@ use allsorts::{
     tables::{FontTableProvider, cmap::Cmap},
 };
 
-/// Which font is being cut, for the two quirks that are per-font rather than
-/// per-call.
+/// Which font is being cut, for the quirks that are per-font.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Vendor {
     /// lucide's TTF carries a malformed `GSUB` table that has to be dropped.
     Lucide,
-    /// The nerd font needs no workaround.
     NerdFont,
 }
 
@@ -39,10 +36,8 @@ pub fn stale(output: &Path, inputs: &[&Path]) -> bool {
 
 /// The path of `file` inside the unpacked `crate_name` crate.
 ///
-/// A build script has no way to ask cargo where a dependency's source is, so
-/// this walks the registry the way cargo lays it out. That layout is stable,
-/// but it means the crate has to be fetched before this runs — which `cargo
-/// fetch` and any normal build already guarantee.
+/// A build script cannot ask cargo where a dependency's source is, so this walks
+/// the registry layout; the crate must already be fetched.
 pub fn crate_file(crate_name: &str, file: &str) -> PathBuf {
     let cargo_home = env::var_os("CARGO_HOME")
         .map(PathBuf::from)
@@ -66,8 +61,7 @@ pub fn crate_file(crate_name: &str, file: &str) -> PathBuf {
             Err(_) => continue,
         };
         for entry in crates.flatten() {
-            // Match `name-version`, not `name` alone: `lucide-icons` and a
-            // future `lucide-icons-macros` would otherwise be confusable.
+            // Match `name-version`, not `name` alone.
             let name = entry.file_name();
             let name = name.to_string_lossy();
             let matches = name.strip_prefix(crate_name).is_some_and(|rest| {
@@ -86,17 +80,13 @@ pub fn crate_file(crate_name: &str, file: &str) -> PathBuf {
     panic!("cannot find {file} in the {crate_name} crate; run `cargo fetch`");
 }
 
-/// Subset `source` to `glyphs` and write it to `output`, unless both the font
-/// and the glyph list are unchanged since the last run.
+/// Subset `source` to `glyphs` and write it to `output`, unless neither the font
+/// nor the glyph list changed since the last run.
 ///
-/// `cargo:rerun-if-changed=src` only makes this script run again; it says
-/// nothing about whether the subset needs rebuilding. The glyph list is an
-/// input like the font is — a new `Icon::Variant` in the UI changes it without
-/// touching the font's timestamp, so a timestamp alone would leave the new
-/// glyph out and draw tofu.
+/// The glyph list is an input like the font is: a new `Icon::Variant` changes it
+/// without touching the font's timestamp, and a timestamp alone would draw tofu.
 pub fn subset_if_changed(source: &Path, output: &Path, glyphs: &[u32], vendor: Vendor) {
-    // The record beside the output is what makes the glyph list comparable
-    // across runs; the font itself only carries the glyphs, not the request.
+    // The record beside the output makes the glyph list comparable across runs.
     let record = output.with_extension("glyphs");
     let wanted = glyphs
         .iter()
@@ -112,11 +102,8 @@ pub fn subset_if_changed(source: &Path, output: &Path, glyphs: &[u32], vendor: V
         .unwrap_or_else(|error| panic!("cannot write {}: {error}", record.display()));
 }
 
-/// Subset `source` to `glyphs` and write it to `output`.
-///
-/// Fails the build rather than shipping a font with a hole in it: a missing
-/// glyph is a tofu box at runtime and nothing else can see it, because the enum
-/// and the font are both opaque data.
+/// Subset `source` to `glyphs` and write it to `output`. Fails the build rather
+/// than shipping a font with a hole in it, which would draw tofu at runtime.
 pub fn subset_font(source: &Path, output: &Path, glyphs: &[u32], vendor: Vendor) {
     let what = match vendor {
         Vendor::Lucide => "lucide",
@@ -126,11 +113,10 @@ pub fn subset_font(source: &Path, output: &Path, glyphs: &[u32], vendor: Vendor)
         .unwrap_or_else(|error| panic!("cannot read {}: {error}", source.display()));
     let mut data = data;
 
-    // lucide's TTF ships a `GSUB` table whose ligature-set count disagrees with
-    // its glyph lists, so a shaper refuses the whole file. The app maps an icon
-    // to one code point and never asks for a ligature, so the table is dead
-    // weight: renaming its tag leaves every offset in the directory valid and
-    // makes the parser skip it.
+    // lucide's `GSUB` table has a ligature-set count that disagrees with its
+    // glyph lists, so a shaper refuses the whole file. The app never asks for a
+    // ligature, so the table is dead weight: renaming its tag leaves every
+    // offset valid and makes the parser skip it.
     if vendor == Vendor::Lucide {
         drop_gsub(&mut data);
     }

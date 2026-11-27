@@ -1,9 +1,5 @@
-//! The image viewer.
-//!
-//! A read-only document: there is nothing to edit and nothing to save, so its
-//! controller reports itself clean and every mutation is a no-op. The image is
-//! drawn at its own pixel size and the wheel scales it; the pane clips whatever
-//! no longer fits rather than shrinking the image to the pane.
+//! The image viewer: read-only, drawn at its own pixel size and scaled by the
+//! wheel and the zoom buttons.
 
 use std::{
     path::{Path, PathBuf},
@@ -61,7 +57,6 @@ impl DocumentController for ImageController {
     }
 
     fn save(&self, _window: &mut Window, _cx: &mut App) -> Result<(), String> {
-        // Nothing to write: the viewer never modifies the file.
         Ok(())
     }
 
@@ -70,8 +65,7 @@ impl DocumentController for ImageController {
     }
 
     fn reload_from_disk(&self, _window: &mut Window, cx: &mut App) {
-        // The image element re-reads the file when the view re-renders, so a
-        // notification is the whole reload.
+        // The image element re-reads the file when the view re-renders.
         self.view.update(cx, |_, cx| cx.notify());
     }
 
@@ -101,8 +95,8 @@ pub struct ImageView {
 /// The zoom ladder the buttons step through.
 const ZOOM_STEPS: [f32; 5] = [0.5, 0.75, 1.0, 1.5, 2.0];
 
-/// What one wheel line multiplies the zoom by. Multiplicative so a trackpad's
-/// many small deltas feel like a mouse's few large ones.
+/// What one wheel line multiplies the zoom by, so a trackpad's many small
+/// deltas feel like a mouse's few large ones.
 const ZOOM_PER_LINE: f32 = 1.1;
 
 /// One wheel line in pixels, for platforms that report a pixel delta.
@@ -240,9 +234,7 @@ impl Render for ImageView {
                                 flex_none
                             />
                         },
-                        // A format with no readable header (SVG) keeps its own
-                        // size and cannot be scaled: there is nothing to
-                        // multiply.
+                        // A format with no readable header (SVG) keeps its own size.
                         None => rsx! {
                             <img
                                 src={path}
@@ -260,11 +252,9 @@ impl Render for ImageView {
 
 /// The image's pixel size, as the element will draw it.
 ///
-/// Asked of GPUI's own image loader rather than decoded here: the loader is
-/// already reading the file for the element, so this shares that one decode and
-/// covers every format the element supports instead of PNG alone. `None` means
-/// the file is not loaded yet (or cannot be), which also covers SVG — it has no
-/// pixel size until the renderer picks one, and stays unzoomed.
+/// Asked of GPUI's own image loader so the decode is shared with the element.
+/// `None` while the file is not loaded yet, and for SVG, which has no pixel size
+/// until the renderer picks one.
 fn image_size(window: &mut Window, path: &Path, cx: &mut App) -> Option<(f32, f32)> {
     let resource = Resource::from(path.to_path_buf());
     let image = window.use_asset::<ImgResourceLoader>(&resource, cx)?.ok()?;
