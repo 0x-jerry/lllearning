@@ -1,0 +1,81 @@
+name: release
+
+# A tag is the whole trigger: the version in `Cargo.toml` is what the artefacts
+# are named and what they report, so the tag has to agree with it. See the guard
+# in "Assemble the portable copy".
+on:
+  push:
+    tags: ["v*"]
+  # Runs the job without publishing anything, so a change to this file can be
+  # exercised before a tag depends on it.
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  package:
+    name: package
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+
+      # GPUI and the webview need nothing beyond a stock MSVC toolchain, which
+      # the runner already has; the WebView2 *runtime* is a user requirement and
+      # is preinstalled on Windows 11.
+      - name: Install the toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache the build
+        uses: Swatinem/rust-cache@v2
+
+      # The icons, the identifier and the release profile come from
+      # `[package.metadata.packager]` in `Cargo.toml`; the packager shell is the
+      # one piece of the release that is not a crate dependency. Pinned, because
+      # that table is a schema the packager owns and a newer one may read it
+      # differently.
+      - name: Install cargo-packager
+        run: cargo install cargo-packager --version 0.11.8 --locked
+
+      # `before-packaging-command` in `Cargo.toml` runs `cargo build --release`,
+      # so this step also produces the exe the portable copy is made of — and it
+      # is where the fat-LTO minutes are spent.
+      - name: Build the installer
+        run: cargo packager --release --formats nsis
+
+      - name: Assemble the portable copy
+        shell: pwsh
+        run: |
+          $version = (cargo metadata --format-version 1 --no-deps | ConvertFrom-Json).packages[0].version
+
+          # The exe is the whole application: the app icon, both icon fonts, the
+          # start page and the theme assets are embedded at compile time, so a
+          # zip of one file is a complete portable build.
+          $dir = "dist/lllearning-$version-portable"
+          New-Item -ItemType Directory -Force -Path $dir | Out-Null
+          Copy-Item target/release/lllearning.exe $dir
+          # The nerd font is embedded in the binary; its licence travels with it.
+          Copy-Item assets/SymbolsNerdFontMono-LICENSE.txt $dir
+          Compress-Archive -Path $dir -DestinationPath "$dir.zip"
+
+          if ($env:GITHUB_REF_TYPE -eq 'tag' -and $env:GITHUB_REF_NAME -ne "v$version") {
+            throw "tag $env:GITHUB_REF_NAME does not match Cargo.toml's version $version"
+          }
+
+          Get-ChildItem target/release/*-setup.exe, dist/*.zip | ForEach-Object {
+            "{0}  {1:N1} MB" -f $_.Name, ($_.Length / 1MB)
+          }
+
+      - name: Publish the release
+        if: github.ref_type == 'tag'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            target/release/*-setup.exe
+            dist/*.zip
+          generate_release_notes: true
+          fail_on_unmatched_files: true
