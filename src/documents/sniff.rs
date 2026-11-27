@@ -12,7 +12,6 @@ use super::Sniff;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FileKind {
     Image,
-    Video,
     Markdown,
     /// The fallback the text viewer claims. Nothing constructs it today; it
     /// exists so [`kind_for`] answers every extension rather than `None`.
@@ -32,16 +31,11 @@ const IMAGE: [&str; 12] = [
     "png", "jpg", "jpeg", "gif", "webp", "bmp", "ico", "tif", "tiff", "avif", "svg", "qoi",
 ];
 
-/// Extensions that are video.
-const VIDEO: [&str; 5] = ["mp4", "webm", "mov", "mkv", "avi"];
-
 /// The kind of file an extension names, if it names one.
 pub fn kind_of(ext: Option<&str>) -> Option<FileKind> {
     let ext = ext?;
     if IMAGE.contains(&ext) {
         Some(FileKind::Image)
-    } else if VIDEO.contains(&ext) {
-        Some(FileKind::Video)
     } else if MARKDOWN.contains(&ext) {
         Some(FileKind::Markdown)
     } else {
@@ -187,7 +181,7 @@ mod tests {
         assert_eq!(kind_of(Some("png")), Some(FileKind::Image));
         assert_eq!(kind_of(Some("PNG")), None, "the table is lowercased first");
         assert_eq!(kind_of(Some("md")), Some(FileKind::Markdown));
-        assert_eq!(kind_of(Some("mp4")), Some(FileKind::Video));
+        assert_eq!(kind_of(Some("mp4")), None, "no viewer claims video");
         assert_eq!(kind_of(Some("rs")), None, "code is the text viewer's job");
         assert_eq!(kind_of(None), None);
     }

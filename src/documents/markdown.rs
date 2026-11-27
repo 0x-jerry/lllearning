@@ -29,7 +29,7 @@ use super::{
 };
 use crate::{app::shell::AppShell, icons};
 
-/// Markdown beats text, and loses to image and video.
+/// Markdown beats text, and loses to image.
 const SCORE: u8 = 70;
 
 /// The markdown viewer.

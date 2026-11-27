@@ -14,7 +14,6 @@ The file decides the viewer; there is no mode to pick.
 | `.md .markdown .mdx` | Markdown editor with live preview (split / editor / preview) |
 | `.png .jpg .jpeg .gif .webp .bmp .ico .tif .tiff .avif .svg .qoi` | Image viewer with zoom steps |
 | code and plain text | Syntax-highlighted editor, language by extension |
-| `.mp4 .webm .mov .mkv .avi` | An explanation, plus a button to open it in the browser pane |
 | binary, or over 8 MiB | An explanation instead of a frozen window |
 
 The tree is read lazily and watched, so changes made outside the app land within

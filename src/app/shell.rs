@@ -103,9 +103,6 @@ pub struct AppShell {
     /// docks. The restore's own root is not that, so the flag tells the handler
     /// to leave the tabs and panes the session just restored alone.
     restoring: bool,
-    /// A URL the browser pane should load next, put here by a viewer that cannot
-    /// play a file itself.
-    browser_request: Option<String>,
     /// The pending debounced session write, held so a newer change can reuse it.
     save_task: Option<gpui::Task<()>>,
     /// The window's bounds as last observed, for the session write.
@@ -172,7 +169,6 @@ impl AppShell {
             widths: HashMap::new(),
             revealed: None,
             restoring: false,
-            browser_request: None,
             save_task: None,
             bounds,
             _subscriptions: Vec::new(),
@@ -865,22 +861,6 @@ impl AppShell {
         self.sides
             .get(&slot)
             .is_some_and(|side| side.read(cx).is_open())
-    }
-
-    /// Navigate the browser pane to `url`.
-    ///
-    /// The video viewer's "open in browser" button goes through this rather than
-    /// reaching into the browser pane, so a viewer never needs to know which
-    /// pane can play a file. The request is recorded and delivered to the
-    /// browser pane, which reads it when it next renders.
-    pub fn navigate_browser(&mut self, url: String, cx: &mut Context<Self>) {
-        self.browser_request = Some(url);
-        cx.notify();
-    }
-
-    /// Take the pending browser navigation, if any.
-    pub fn take_browser_request(&mut self) -> Option<String> {
-        self.browser_request.take()
     }
 
     /// Ask for a folder and open it.

@@ -56,7 +56,7 @@ src/app/              the shell and its chrome
   popup/contextmenu.rs a list of commands at the pointer
   mod.rs              init(): the one place a feature is switched on
 src/panes/            side-pane seam: explorer, browser, outline
-src/documents/        document seam: text, markdown, image, video, refused, sniff
+src/documents/        document seam: text, markdown, image, refused, sniff
   status_bar_helper.rs  the items an editor's status bar says: type, caret, size
 src/workspace/        folder root, lazy tree, notify watcher, fs helpers
 src/state.rs          the session file, the window's bounds included
@@ -173,7 +173,6 @@ current table — asserted by tests, so change the tests with it:
 | Provider | Score | Claims |
 | --- | --- | --- |
 | `image` | 90 | image extensions |
-| `video` | 80 | video extensions (placeholder) |
 | `markdown` | 70 | `.md .markdown .mdx` |
 | `text` | 10 | anything not binary and under 8 MiB |
 | `refused` | 1 | what text declined, so it opens an explanation |
@@ -318,8 +317,7 @@ Startup takes hundreds of milliseconds, and the dock can be closed or switched
 away in that window, so `BrowserView::wanted_visible` records what `activation`
 and `Render` last asked for and `page_ready` applies it (risk R1b). For the same
 reason the page is born hidden, and every navigation asked for before it exists
-waits in `pending_url`: an address typed in that window and the video viewer's
-"open in browser" both load once the page is there.
+waits in `pending_url`: an address typed in that window loads once the page is there.
 
 **The window's build closure runs before its first frame, so nothing expensive
 belongs in it.** Until GPUI presents a frame the window is a black rectangle,
@@ -375,8 +373,9 @@ binding will not reach it. The action is `documents::text::SaveDocument`.
 - **The webview paints over dialogs and dropdowns.** WebView2 cannot be clipped
   to a partial region on Windows. Dialogs render at the window root and the
   browser pane never anchors a dropdown.
-- **Video files open a placeholder.** GPUI has no video element. The provider
-  explains that and offers the browser pane.
+- **Video files open an explanation.** GPUI has no video element, and no
+  provider claims video extensions, so a video file is a binary one: the panel
+  says so instead of pretending it could play.
 - **A second app instance cannot start the webview** — it holds the WebView2
   profile lock, and the pane says so instead of panicking.
 - **The save prompt is a separate window.** Not a bug, and not a regression from
@@ -398,7 +397,7 @@ into a dangling lookup.
 | R1b | **The webview is a native child window, so it outlives the element that places it.** Collapsing the dock, switching pane or drawing the pane's error over the page leaves the page painted at its last bounds. | The pane hides and shows the native view itself: `PaneContent::activation` from the shell on every show/hide transition, and every render while an error is on show. Asserted by `scripts/drive-webview-hide.ps1`. |
 | R2 | WebView2 profile lock: a second instance fails to start the webview. | The browser pane shows a "could not start" panel instead of panicking. |
 | R3 | `TreeItem::is_folder()` is `!children.is_empty()`, so an empty directory is not a folder and cannot be expanded. | Give an empty or unreadable directory a disabled placeholder child; skip it when rendering and when resolving clicks (`workspace/tree.rs`). |
-| R4 | **No native video element in GPUI.** | The `video` provider is a placeholder that explains why and offers the browser pane. The seam is unaffected — a real viewer is one provider. |
+| R4 | **No native video element in GPUI.** | *(resolved)* The placeholder provider is gone; nothing claims video extensions, so a video file opens the binary explanation panel. A real viewer is one provider plus a score row. |
 | R5 | `TreeState::set_items` clears the selection, so every lazy expand would lose the highlight. | Re-apply `set_selected_item` after each rebuild; keep expansion state in `DirTree`, not only in `TreeItem`. |
 | R6 | The base tree toggles expand on **any** click, including a file click; `on_click` inside the item runs first but selection changes after. | File rows call `cx.stop_propagation()` on the label and open the document there; dirs keep the default behaviour. |
 | R7 | `notify` emits duplicates and rename pairs on Windows; watching a large tree is expensive. | 250 ms debounce plus path dedupe, and per-directory refresh only for *loaded* dirs. |

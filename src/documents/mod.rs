@@ -23,7 +23,6 @@ pub mod markdown_outline;
 pub mod sniff;
 pub mod status_bar_helper;
 pub mod text;
-pub mod video;
 
 use std::{
     path::{Path, PathBuf},
@@ -96,8 +95,8 @@ pub struct OpenContext {
     pub path: PathBuf,
     /// What was sniffed, so a provider does not repeat the work.
     pub sniff: Sniff,
-    /// The shell, for a viewer that needs to drive the rest of the app — the
-    /// video placeholder's "open in browser" button is the case this exists for.
+    /// The shell, for a viewer that needs to drive the rest of the app — an
+    /// editor asks it to write the session when a setting changes.
     pub shell: WeakEntity<AppShell>,
     /// The workspace, for a viewer that wants to reveal its file.
     #[allow(dead_code)]
@@ -194,8 +193,7 @@ pub trait DocumentController {
     /// The outline of the document's contents, if this viewer has one.
     ///
     /// `None` is the answer for every viewer that cannot outline itself, and it
-    /// is what keeps the outline pane from claiming a binary file or a video
-    /// has headings. `Some(vec![])` means "this viewer outlines, and this file
+    /// is what keeps the outline pane from claiming a binary file has headings. `Some(vec![])` means "this viewer outlines, and this file
     /// happens to have no entries" — the pane says so rather than the viewer
     /// declining.
     ///
@@ -287,7 +285,7 @@ impl DocumentRegistry {
     /// The best provider for a file, by score.
     ///
     /// Ties go to the provider registered first, so the built-in set's order is
-    /// meaningful: image before video before markdown before text.
+    /// meaningful: image before markdown before text.
     pub fn best_for(&self, path: &Path, sniff: &Sniff) -> Option<Rc<dyn DocumentProvider>> {
         let mut best: Option<(u8, &Rc<dyn DocumentProvider>)> = None;
         for provider in &self.providers {
@@ -345,7 +343,6 @@ pub fn providers(cx: &App) -> Vec<Rc<dyn DocumentProvider>> {
 /// Order matters only for ties, and the scores are chosen so there are none.
 pub fn register_builtins(cx: &mut App) {
     register_document_provider(cx, Rc::new(image::ImageProvider));
-    register_document_provider(cx, Rc::new(video::VideoProvider));
     register_document_provider(cx, Rc::new(markdown::MarkdownProvider));
     register_document_provider(cx, Rc::new(text::TextProvider));
     // Last, and scoring below text: it only claims what text refused, so a
@@ -721,7 +718,6 @@ mod tests {
     fn registry() -> DocumentRegistry {
         let mut registry = DocumentRegistry::default();
         registry.providers.push(Rc::new(image::ImageProvider));
-        registry.providers.push(Rc::new(video::VideoProvider));
         registry.providers.push(Rc::new(markdown::MarkdownProvider));
         registry.providers.push(Rc::new(text::TextProvider));
         registry.providers.push(Rc::new(refused::RefusedProvider));
@@ -734,20 +730,21 @@ mod tests {
     fn each_file_type_lands_on_the_viewer_it_should() {
         let registry = registry();
 
-        let cases: [(Option<&str>, Option<&str>); 8] = [
-            (Some("png"), Some("image")),
-            (Some("jpg"), Some("image")),
-            (Some("mp4"), Some("video")),
-            (Some("webm"), Some("video")),
-            (Some("md"), Some("markdown")),
-            (Some("rs"), Some("text")),
-            (Some("txt"), Some("text")),
+        let cases: [(Option<&str>, bool, Option<&str>); 8] = [
+            (Some("png"), false, Some("image")),
+            (Some("jpg"), false, Some("image")),
+            // No video viewer: video files are binary, so the panel explains.
+            (Some("mp4"), true, Some("refused")),
+            (Some("webm"), true, Some("refused")),
+            (Some("md"), false, Some("markdown")),
+            (Some("rs"), false, Some("text")),
+            (Some("txt"), false, Some("text")),
             // No extension at all is still text.
-            (None, Some("text")),
+            (None, false, Some("text")),
         ];
 
-        for (ext, expected) in cases {
-            let sniff = sniff(ext, 128, false);
+        for (ext, is_binary, expected) in cases {
+            let sniff = sniff(ext, 128, is_binary);
             let provider = registry.best_for(Path::new("a"), &sniff);
             assert_eq!(
                 provider.map(|provider| provider.id()),

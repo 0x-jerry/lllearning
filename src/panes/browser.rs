@@ -519,12 +519,6 @@ impl BrowserView {
         self.set_loading(false, cx);
     }
 
-    /// Take a navigation another pane asked the shell for.
-    fn take_shell_request(&self, cx: &mut Context<Self>) -> Option<String> {
-        let shell = self.shell.upgrade()?;
-        shell.update(cx, |shell, _| shell.take_browser_request())
-    }
-
     /// Show or hide the native view so it agrees with what the pane draws.
     ///
     /// The webview is a child window of the app window, not something GPUI
@@ -561,13 +555,6 @@ impl Focusable for BrowserView {
 
 impl Render for BrowserView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        // A viewer that cannot play a file asks the shell to load it here; the
-        // request is picked up on the next frame rather than pushed, so the
-        // browser pane keeps owning its own navigation.
-        if let Some(url) = self.take_shell_request(cx) {
-            self.navigate(&url, cx);
-        }
-
         let border = cx.theme().border;
         let danger = cx.theme().danger;
         let muted = cx.theme().muted_foreground;
