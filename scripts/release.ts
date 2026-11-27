@@ -11,10 +11,13 @@
 // starts here: the bump and the tag are made together, and pushing stays a
 // separate step unless `--push` asks for it.
 
-import { $ } from "bun";
+import { $, TOML } from "bun";
 
 const CARGO_TOML = "Cargo.toml";
 const CARGO_LOCK = "Cargo.lock";
+
+/** The part of `Cargo.toml` a release reads. */
+type Manifest = { package?: { version?: string } };
 
 const argv = process.argv.slice(2);
 const push = argv.includes("--push");
@@ -25,10 +28,9 @@ if (requested === undefined) {
 }
 
 const manifest = await Bun.file(CARGO_TOML).text();
-const match = manifest.match(/^version = "([^"]+)"/m);
-if (match === null) fail(`${CARGO_TOML} has no package version line`);
+const current = (TOML.parse(manifest) as Manifest).package?.version;
+if (current === undefined) fail(`${CARGO_TOML} has no [package] version`);
 
-const current = match[1]!;
 const next = bump(current, requested);
 const tag = `v${next}`;
 
@@ -47,7 +49,17 @@ const branch = (await $`git rev-parse --abbrev-ref HEAD`.quiet().text()).trim();
 
 // The lockfile records the package's own version too. `cargo metadata` rewrites
 // it from the manifest, which is the one place that knows how a lock is encoded.
-await Bun.write(CARGO_TOML, manifest.replace(/^version = "([^"]+)"/m, `version = "${next}"`));
+//
+// The manifest itself is edited as text: `TOML.stringify` would rewrite the file —
+// its comments, section order and inline dependency tables — to publish a bump.
+// So the one line is replaced and the result parsed, which is what proves the
+// line that changed is the version and not something else's.
+const bumped = manifest.replace(/^version = "([^"]+)"/m, `version = "${next}"`);
+if ((TOML.parse(bumped) as Manifest).package?.version !== next) {
+  fail(`${CARGO_TOML}: could not pin the [package] version to ${next}`);
+}
+await Bun.write(CARGO_TOML, bumped);
+
 const refreshed = await $`cargo metadata --format-version 1`.quiet().nothrow();
 if (refreshed.exitCode !== 0) {
   await $`git checkout -- ${CARGO_TOML}`.quiet();
