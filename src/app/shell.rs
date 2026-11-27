@@ -340,17 +340,11 @@ impl AppShell {
                 .first()
                 .map(|provider| provider.id().to_owned());
             let side = self.side(slot, cx);
-            side.update(cx, |side, cx| {
-                match &first {
-                    Some(id) => {
-                        side.show(id, window, cx);
-                    }
-                    None => side.apply(&SideState::default(), cx),
+            side.update(cx, |side, cx| match &first {
+                Some(id) => {
+                    side.show(id, window, cx);
                 }
-                // A closed dock is reopened by its strip, and the strip reads
-                // the active pane, so the pane has to exist before the first
-                // frame.
-                side.ensure_active(window, cx);
+                None => side.apply(&SideState::default(), cx),
             });
         }
     }
@@ -440,7 +434,8 @@ impl AppShell {
         // panes can be built with `update_in` when it wakes.
         //
         // `apply_saved_sides` already recorded which pane each dock shows, so all
-        // that is left is to build them.
+        // that is left is to build them — and only the docks that are open, since
+        // a collapsed one builds nothing.
         cx.spawn_in(window, async move |this, cx| {
             cx.background_executor()
                 .timer(std::time::Duration::ZERO)

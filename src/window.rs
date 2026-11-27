@@ -80,6 +80,51 @@ pub(crate) fn show_first(cx: &mut AsyncApp) {
     with_window(cx, show);
 }
 
+/// The app window's handle as an owned value, for work that has to cross an
+/// `await`.
+///
+/// A GPUI foreground task cannot hold a `&Window` between await points — the
+/// window is only readable inside `AsyncWindowContext::update` — and wry's
+/// asynchronous build borrows its parent for the whole build. Copying the raw
+/// handle out once is what lets the browser pane start its page without
+/// blocking the render thread (risk R21).
+#[cfg(target_os = "windows")]
+#[derive(Clone, Copy)]
+pub(crate) struct ParentWindow(raw_window_handle::Win32WindowHandle);
+
+#[cfg(target_os = "windows")]
+impl ParentWindow {
+    /// The handle of `window`, or `None` when the platform does not report a
+    /// Win32 one.
+    pub(crate) fn of(window: &Window) -> Option<Self> {
+        use raw_window_handle::RawWindowHandle;
+
+        // Named through the trait: the inherent `Window::window_handle` returns
+        // an `AnyWindowHandle` instead of the raw one.
+        let handle = raw_window_handle::HasWindowHandle::window_handle(window).ok()?;
+        match handle.as_raw() {
+            RawWindowHandle::Win32(win32) => Some(Self(win32)),
+            _ => None,
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+impl raw_window_handle::HasWindowHandle for ParentWindow {
+    fn window_handle(
+        &self,
+    ) -> Result<raw_window_handle::WindowHandle<'_>, raw_window_handle::HandleError> {
+        // SAFETY: the handle belongs to a window that outlives this value. The
+        // only holder is the browser pane's build task, and the pane lives in
+        // that window's element tree.
+        Ok(unsafe {
+            raw_window_handle::WindowHandle::borrow_raw(raw_window_handle::RawWindowHandle::Win32(
+                self.0,
+            ))
+        })
+    }
+}
+
 /// The owner handle for a prompt window, in the platform's own representation.
 pub(crate) fn owner_of(window: &Window) -> Option<isize> {
     raw_hwnd(window).map(|hwnd| hwnd as isize)

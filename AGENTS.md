@@ -63,7 +63,8 @@ src/state.rs          the session file
 src/logging.rs        the log sink (stdout) and the startup marks
 src/icons.rs          icon glyphs as text: lucide, and the nerd font for file types
 src/tray.rs           tray icon; hide-on-close
-src/window.rs         Win32 hide/show, and owning a prompt window to its caller
+src/window.rs         Win32 hide/show, the owned handle a build crosses awaits with,
+                      and owning a prompt window to its caller
 build/                the build script: subsets the icon fonts, one file per font
   main.rs             what it does and when; the two font calls
   font.rs             crate lookup, subsetting, staleness
@@ -238,9 +239,36 @@ up, so a prompt left minimized behind it would lock the app. A context menu
 instead takes no input from the owner, so the owner stays clickable and a click
 there is what dismisses it.
 
-**Side panes are built once and cached in `SideView`.** Rebuilding on every
-switch would recreate the WebView2 — slow, and it re-arms the profile lock (risk
-R2) — and would throw away the explorer's expansion state.
+**Side panes are built once and cached in `SideView`, and only while their dock
+is open.** Rebuilding on every switch would recreate the WebView2 — slow, and it
+re-arms the profile lock (risk R2) — and would throw away the explorer's
+expansion state. A collapsed dock builds nothing at all: it only names the pane
+it would show, and building one starts a browser process (risk R22).
+
+**`WebView::build` freezes the render thread; build the page asynchronously.**
+wry's synchronous path waits for WebView2 inside a *nested* Win32 message pump
+(`webview2_com::wait_with_pump`), so GPUI's loop, its executor and every frame
+stall for the length of that wait — measured at ~350 ms here, the bulk of risk
+R19. `wry::WebViewBuilder::build_as_child_async` awaits the same two steps on
+channels instead, which leaves GPUI's own loop draining: the browser pane starts
+its build from a task and awaits it, so chrome, resizes and clicks keep working
+while the page starts. Two things that look odd and are not:
+
+- The task cannot hold `&Window` across an await, so it captures
+  `window::ParentWindow` — the app's HWND copied into an owned
+  `HasWindowHandle` shim — and `gpui_webview::WebView::new` (the second half of
+  `WebView::build`) adopts the result inside `update_in`.
+- The build task must be kept alive (`_build_task`). wry creates its container
+  HWND before the first await, so dropping the future leaks that window; the
+  builder is also given `with_visible(false)` so a leak would never paint.
+
+**The page can arrive after the transition that decided whether it is shown.**
+Startup takes hundreds of milliseconds, and the dock can be closed or switched
+away in that window, so `BrowserView::wanted_visible` records what `activation`
+and `Render` last asked for and `page_ready` applies it (risk R1b). For the same
+reason the page is born hidden, and every navigation asked for before it exists
+waits in `pending_url`: an address typed in that window and the video viewer's
+"open in browser" both load once the page is there.
 
 **The window's build closure runs before its first frame, so nothing expensive
 belongs in it.** Until GPUI presents a frame the window is a black rectangle,
@@ -336,6 +364,8 @@ into a dangling lookup.
 | R17 | **An in-window dialog or popover is covered by the webview.** `window.open_dialog` and an anchored popover draw into the main window's element tree, under the browser pane's native child window — the same cause as R1, which is why R1 alone did not cover it. | Dialogs and context menus are their own window (`app/popup/`), owned by the caller and reporting their answer back. Toasts and the tab bar's own `menu` still draw in-window, so R1 still governs them. |
 | R19 | **A black window at startup.** The window is shown before its first frame is presented, and the platform's window class paints black until one is; anything expensive in the window's build closure — building a pane, reading a folder, starting the watcher — widens that gap. It measured ~570 ms on this machine, with the browser pane's WebView2 as the bulk of it. | `AppShell::new` does only cheap work and defers `restore_session` past the first presented frame; the folder listing and the watcher start on the background executor (R8). Gap is ~90 ms. See the two traps above for why the deferral needs two hops. |
 | R20 | **A restart loses every restored tab.** `Workspace::set_root` emits `RootChanged`, whose handler closes all documents and resets the docks; the restore calls `set_root` itself, so it discarded the tabs it had just reopened — and the next session write dropped them from the file too. | `AppShell::restoring` is raised around the restore's `set_root` and the `RootChanged` handler returns early for it. Only a genuine folder switch resets the tabs. |
+| R21 | **Starting the webview stalls the whole app.** `wry`'s synchronous build waits for WebView2 inside a nested Win32 message pump, so GPUI's loop, its executor and every frame freeze for the length of the wait (~350 ms here) — inside a click handler when the dock is opened, and inside the restore at startup. | The pane builds its page from a task that awaits `build_as_child_async`, keeping the task alive and adopting the result in `update_in`; a wait for the page shows a placeholder, and the raw HWND is copied into `window::ParentWindow` so the build can cross await points. `scripts/drive-webview-start.ps1` fails if a frame lands more than 150 ms after the build starts. See the trap above. |
+| R22 | **A collapsed dock used to pay for its pane.** The restore called `ensure_active` for both docks, so a right dock restored closed still built the WebView2 — hundreds of milliseconds nothing on screen needed. | `SideView::ensure_active` returns early while the dock is closed, and `set_open` ensures the pane when the dock opens. The pane is built on the frame after the dock's chrome, never during it. |
 
 ## Verifying UI changes
 
@@ -349,6 +379,7 @@ pwsh -File scripts/drive-session.ps1  # restart and check the layout came back
 pwsh -File scripts/drive-close.ps1    # dirty close prompt, Save, md5
 pwsh -File scripts/drive-strip.ps1    # a pane button toggles its dock
 pwsh -File scripts/drive-webview-hide.ps1  # the webview leaves with its dock
+pwsh -File scripts/drive-webview-start.ps1 # starting it does not stall a frame
 ```
 
 Build first, then run them. They assert on file hashes where they can, so a
@@ -356,13 +387,23 @@ silent no-op save is caught. Row positions in the scripts are pixel coordinates
 for the default 1216×768 window; if the layout changes, the clicks need
 updating — read the screenshots rather than trusting a green run.
 
+`drive-webview-start.ps1` is the exception to that: it reads the startup marks
+below instead of clicking, and fails when `first frame presented` lands more than
+150 ms after `webview build started`. A hung-window probe cannot see this,
+because wry's nested pump still dispatches window messages while it blocks every
+frame.
+
 Startup timing is logged, not benchmarked: `logging` marks `shell built`,
 `first draw`, `panes built` and `first frame presented` with milliseconds since
-`main` began, so a run says where the black window's time went (risk R19). Run
-the binary and read stdout; `panes built` must land after `first draw`, or the
-deferred restore is back in front of the frame carrying the chrome. The sink is
-`simple_logger`, which also surfaces gpui's own records — its GPU and font
-lines, and the errors it used to swallow in `.log_err()`.
+`main` began, so a run says where the black window's time went (risk R19). The
+browser pane adds `webview build started` and `webview ready`, and
+`first frame presented` has to land between them — that is what
+`drive-webview-start.ps1` asserts. A session whose right dock is collapsed logs
+neither mark, because that dock builds nothing (risk R22). Run the binary and
+read stdout; `panes built` must land after `first draw`, or the deferred restore
+is back in front of the frame carrying the chrome. The sink is `simple_logger`,
+which also surfaces gpui's own records — its GPU and font lines, and the errors
+it used to swallow in `.log_err()`.
 
 To seed a session by hand:
 

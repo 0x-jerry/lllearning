@@ -7,6 +7,7 @@
 //! window, so the pane hides it whenever it stops being on show (risk R1b).
 
 use std::rc::Rc;
+use std::time::Duration;
 
 use gpui::component::{
     ActiveTheme as _, Sizable as _,
@@ -15,7 +16,7 @@ use gpui::component::{
 };
 use gpui::{
     App, AppContext as _, Context, Entity, FocusHandle, Focusable, IntoElement, ParentElement as _,
-    Render, SharedString, Styled as _, Subscription, Window, div, px,
+    Render, SharedString, Styled as _, Subscription, Task, Window, div, px,
 };
 use gpui_rsx::rsx;
 use gpui_webview::WebView;
@@ -50,6 +51,27 @@ enum WebViewEvent {
     /// The page changed its own URL without loading a new document.
     Url(String),
 }
+
+/// The native page, and what the pane knows about starting it.
+///
+/// The build is a state of its own rather than an `Option` the pane reports as a
+/// failure: WebView2 starts its browser process asynchronously, and until it is
+/// done there is nothing native to show and nothing wrong.
+enum Page {
+    /// The build is in flight on this thread's own message loop.
+    Starting,
+    Ready(Entity<WebView>),
+    /// WebView2 refused to start — another instance holds the profile lock
+    /// (risk R2) — and the pane explains that instead of leaving an empty area.
+    Failed,
+}
+
+/// What the build task hands back: the page as wry built it, or already wrapped
+/// where the platform builds it from a window reference.
+#[cfg(target_os = "windows")]
+type BuiltPage = wry::WebView;
+#[cfg(not(target_os = "windows"))]
+type BuiltPage = Entity<WebView>;
 
 /// Turn what the user typed into a URL to navigate to.
 ///
@@ -121,9 +143,15 @@ impl PaneProvider for BrowserPane {
 /// The browser's state.
 pub struct BrowserView {
     focus_handle: FocusHandle,
-    /// `None` when the webview could not be created, which the pane reports
-    /// instead of leaving an empty area behind.
-    webview: Option<Entity<WebView>>,
+    /// The native page, if it has started.
+    page: Page,
+    /// Whether the pane is on screen. Remembered separately from the page
+    /// because the page can arrive long after the transition that decided it
+    /// (risk R1b).
+    wanted_visible: bool,
+    /// A navigation asked for before the page existed: an address typed in that
+    /// window, or a viewer that cannot play a file.
+    pending_url: Option<String>,
     address: Entity<InputState>,
     loading: bool,
     address_edited: bool,
@@ -135,6 +163,9 @@ pub struct BrowserView {
     start_page: bool,
     /// The shell, for the navigations other panes route through it.
     shell: gpui::WeakEntity<crate::app::shell::AppShell>,
+    /// Kept so the build is not cancelled mid-flight, which would leak the
+    /// container window wry creates before its first await.
+    _build_task: Option<Task<()>>,
     _address_events: Subscription,
 }
 
@@ -148,55 +179,74 @@ impl BrowserView {
         // funnelled through a channel into a foreground task that updates the view.
         let (event_tx, event_rx) = gpui::base::async_util::unbounded::<WebViewEvent>();
 
-        let built = {
-            let ipc_tx = event_tx.clone();
-            let builder = wry::WebViewBuilder::new()
-                .with_on_page_load_handler(move |event, url| {
-                    let loading = matches!(event, wry::PageLoadEvent::Started);
-                    let _ = event_tx.try_send(WebViewEvent::Load { url, loading });
-                })
-                .with_ipc_handler(move |request| {
-                    if let Some(url) = request.body().strip_prefix(URL_MESSAGE_PREFIX) {
-                        let _ = ipc_tx.try_send(WebViewEvent::Url(url.to_owned()));
-                    }
-                })
-                .with_initialization_script(URL_REPORTER_JS);
-            #[cfg(any(debug_assertions, feature = "inspector"))]
-            let builder = builder.with_devtools(true);
+        let ipc_tx = event_tx.clone();
+        let builder = wry::WebViewBuilder::new()
+            .with_on_page_load_handler(move |event, url| {
+                let loading = matches!(event, wry::PageLoadEvent::Started);
+                let _ = event_tx.try_send(WebViewEvent::Load { url, loading });
+            })
+            .with_ipc_handler(move |request| {
+                if let Some(url) = request.body().strip_prefix(URL_MESSAGE_PREFIX) {
+                    let _ = ipc_tx.try_send(WebViewEvent::Url(url.to_owned()));
+                }
+            })
+            .with_initialization_script(URL_REPORTER_JS)
+            // Born hidden: only the element that places the page may show it,
+            // and a build that fails or is cancelled must not paint an empty
+            // native rectangle over the pane.
+            .with_visible(false);
+        #[cfg(any(debug_assertions, feature = "inspector"))]
+        let builder = builder.with_devtools(true);
 
-            WebView::build(builder, window, cx)
-        };
+        #[cfg(target_os = "windows")]
+        let parent = crate::window::ParentWindow::of(window);
 
-        // WebView2 refuses to start while another instance holds the profile lock,
-        // and reports it as a plain error. Keep the app running with a message in
-        // the pane rather than panicking inside the build closure.
-        let webview = match built {
-            Ok(mut view) => {
-                let _ = view.raw().load_html(START_PAGE_HTML);
-                // Starts hidden: a pane restored into a collapsed dock is never
-                // told `set_active(false)`, so only a render that actually places
-                // the page may show it.
-                view.hide();
-                Some(cx.new(|_| view))
-            }
-            Err(error) => {
-                log::error!("failed to create the webview: {error}");
-                None
-            }
-        };
+        let build_task = cx.spawn_in(window, async move |this, cx| {
+            // One executor turn first: a background timer resolves between frame
+            // iterations, so the frame carrying the dock and this pane's
+            // placeholder goes out before WebView2 starts (risk R19).
+            cx.background_executor().timer(Duration::ZERO).await;
+            crate::logging::mark("webview build started");
+
+            // `WebView::build` waits for WebView2 inside a nested Win32 pump, so
+            // every frame and task stalls for the length of that wait. wry's
+            // async path awaits the same two steps instead, which leaves GPUI's
+            // own loop draining messages (risk R21).
+            #[cfg(target_os = "windows")]
+            let started = match parent {
+                Some(parent) => builder
+                    .build_as_child_async(&parent)
+                    .await
+                    .map_err(|error| error.to_string()),
+                None => Err("the window has no native handle".to_owned()),
+            };
+            #[cfg(not(target_os = "windows"))]
+            let started = cx
+                .update(|window, cx| {
+                    WebView::build(builder, window, cx)
+                        .map(|mut view| {
+                            view.hide();
+                            cx.new(|_| view)
+                        })
+                        .map_err(|error| error.to_string())
+                })
+                .unwrap_or_else(|_| Err("the window is gone".to_owned()));
+
+            let _ = this.update_in(cx, |this, window, cx| this.page_ready(started, window, cx));
+        });
 
         let address = cx.new(|cx| InputState::new(window, cx).placeholder("Enter an address"));
 
         let address_events = cx.subscribe_in(
             &address,
             window,
-            |this: &mut Self, input, event: &InputEvent, window, cx| match event {
+            |this: &mut Self, input, event: &InputEvent, _window, cx| match event {
                 InputEvent::Change => this.address_edited = true,
                 InputEvent::Blur => this.address_edited = false,
                 InputEvent::PressEnter { .. } => {
                     this.address_edited = false;
                     let value = input.read(cx).value();
-                    this.navigate(&value, window, cx);
+                    this.navigate(&value, cx);
                 }
                 _ => {}
             },
@@ -216,16 +266,63 @@ impl BrowserView {
 
         Self {
             focus_handle: cx.focus_handle(),
-            webview,
+            page: Page::Starting,
+            wanted_visible: false,
+            pending_url: None,
             address,
-            loading: true,
+            loading: false,
             address_edited: false,
             error: None,
             error_address: String::new(),
             start_page: true,
             shell,
+            _build_task: Some(build_task),
             _address_events: address_events,
         }
+    }
+
+    /// The page, once it has started.
+    fn webview(&self) -> Option<&Entity<WebView>> {
+        match &self.page {
+            Page::Ready(view) => Some(view),
+            Page::Starting | Page::Failed => None,
+        }
+    }
+
+    /// Adopt what the build task produced.
+    fn page_ready(
+        &mut self,
+        built: Result<BuiltPage, String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.page = match built {
+            #[cfg(target_os = "windows")]
+            Ok(raw) => {
+                let mut view = WebView::new(raw, window, cx);
+                view.hide();
+                Page::Ready(cx.new(|_| view))
+            }
+            #[cfg(not(target_os = "windows"))]
+            Ok(view) => Page::Ready(view),
+            Err(message) => {
+                log::error!("failed to create the webview: {message}");
+                Page::Failed
+            }
+        };
+
+        if matches!(self.page, Page::Failed) {
+            self.set_loading(false, cx);
+        } else if let Some(url) = self.pending_url.take() {
+            self.navigate(&url, cx);
+        } else {
+            self.show_start_page(cx);
+        }
+        // The dock may have hidden or closed this pane while the page was
+        // starting, and only this decides whether it goes on screen (risk R1b).
+        self.set_webview_visible(self.wanted_visible, cx);
+        crate::logging::mark("webview ready");
+        cx.notify();
     }
 
     fn set_loading(&mut self, loading: bool, cx: &mut Context<Self>) {
@@ -268,19 +365,26 @@ impl BrowserView {
     }
 
     /// Navigate to what the user typed.
-    fn navigate(&mut self, input: &str, window: &mut Window, cx: &mut Context<Self>) {
-        self.set_loading(true, cx);
-        self.error = None;
-
+    fn navigate(&mut self, input: &str, cx: &mut Context<Self>) {
         if input.trim().is_empty() {
+            // Nothing pending means the start page, which `page_ready` loads.
+            self.pending_url = None;
+            self.error = None;
             self.show_start_page(cx);
             return;
         }
 
         let url = resolve_address(input);
-        let Some(webview) = &self.webview else {
+        let webview = self.webview().cloned();
+        let Some(webview) = webview else {
+            // Still starting: the page replays the request when it arrives, so a
+            // navigation asked for in that window is not lost.
+            self.pending_url = Some(url);
             return;
         };
+
+        self.set_loading(true, cx);
+        self.error = None;
         let started = webview
             .read(cx)
             .raw()
@@ -296,12 +400,11 @@ impl BrowserView {
                 self.set_loading(false, cx);
             }
         }
-        let _ = window;
     }
 
     /// Replace the page with the built-in start page.
     fn show_start_page(&mut self, cx: &mut Context<Self>) {
-        let Some(webview) = &self.webview else {
+        let Some(webview) = self.webview() else {
             return;
         };
         let loaded = webview
@@ -318,7 +421,7 @@ impl BrowserView {
     }
 
     fn go_back(&mut self, cx: &mut Context<Self>) {
-        let Some(webview) = &self.webview else {
+        let Some(webview) = self.webview() else {
             return;
         };
         let _ = webview.update(cx, |view, _| view.back());
@@ -327,7 +430,7 @@ impl BrowserView {
     }
 
     fn go_forward(&mut self, cx: &mut Context<Self>) {
-        let Some(webview) = &self.webview else {
+        let Some(webview) = self.webview() else {
             return;
         };
         let _ = webview.update(cx, |view, _| view.forward());
@@ -336,7 +439,8 @@ impl BrowserView {
     }
 
     fn reload(&mut self, cx: &mut Context<Self>) {
-        let Some(webview) = &self.webview else {
+        let webview = self.webview().cloned();
+        let Some(webview) = webview else {
             return;
         };
         self.error = None;
@@ -352,7 +456,7 @@ impl BrowserView {
     }
 
     fn stop(&mut self, cx: &mut Context<Self>) {
-        let Some(webview) = &self.webview else {
+        let Some(webview) = self.webview() else {
             return;
         };
         // wry has no stop API; `window.stop()` is supported by both engines.
@@ -374,7 +478,11 @@ impl BrowserView {
     /// the element and leave the page painted at its last bounds (risk R1), so
     /// the pane hides it by hand and the next layout pass places it again.
     fn set_webview_visible(&mut self, visible: bool, cx: &mut Context<Self>) {
-        let Some(webview) = &self.webview else {
+        // Remembered even with no page yet: WebView2 can take hundreds of
+        // milliseconds to start, and the dock may be hidden or closed before it
+        // does.
+        self.wanted_visible = visible;
+        let Some(webview) = self.webview() else {
             return;
         };
         webview.update(cx, |view, _| {
@@ -402,7 +510,7 @@ impl Render for BrowserView {
         // request is picked up on the next frame rather than pushed, so the
         // browser pane keeps owning its own navigation.
         if let Some(url) = self.take_shell_request(cx) {
-            self.navigate(&url, _window, cx);
+            self.navigate(&url, cx);
         }
 
         let border = cx.theme().border;
@@ -411,7 +519,8 @@ impl Render for BrowserView {
         let loading = self.loading;
         let error = self.error.clone();
         let error_address = self.error_address.clone();
-        let webview = self.webview.clone();
+        let webview = self.webview().cloned();
+        let build_failed = matches!(self.page, Page::Failed);
         // The element below is the only thing that places the page, so this is
         // the only place allowed to show it: whatever this render decides to
         // draw, the native child window has to agree. Doing it here rather than
@@ -482,7 +591,7 @@ impl Render for BrowserView {
                         }
                     } else if let Some(webview) = webview {
                         rsx! { <div class="size-full" pl={px(5.)}>{webview}</div> }
-                    } else {
+                    } else if build_failed {
                         rsx! {
                             <div class="flex flex-col size-full items-center justify-center gap-2 p-4">
                                 {icons::icon(lucide_icons::Icon::TriangleAlert, 24.)
@@ -491,6 +600,13 @@ impl Render for BrowserView {
                                 <div class="text-xs" text_color={muted}>
                                     {"Close the other window, then reopen the app."}
                                 </div>
+                            </div>
+                        }
+                    } else {
+                        rsx! {
+                            <div class="flex flex-col size-full items-center justify-center gap-2 p-4">
+                                {icons::icon(lucide_icons::Icon::Globe, 24.).text_color(muted)}
+                                <div class="text-sm">{"Starting the web view…"}</div>
                             </div>
                         }
                     }}

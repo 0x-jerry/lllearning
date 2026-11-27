@@ -94,6 +94,9 @@ pub trait PaneProvider: 'static {
     }
 
     /// Build the pane's view.
+    ///
+    /// Runs on the render thread, so a provider that starts something expensive
+    /// must start it and return, not wait for it.
     fn build(&self, ctx: PaneContext, window: &mut Window, cx: &mut App) -> PaneContent;
 }
 

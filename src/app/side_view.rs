@@ -150,13 +150,24 @@ impl SideView {
 
     fn set_open(&mut self, open: bool, window: &mut Window, cx: &mut Context<Self>) {
         self.open = open;
+        if open {
+            // A toggle opens a dock whose pane a collapsed dock never built.
+            self.ensure_active(window, cx);
+        }
         self.activate(window, cx);
         cx.notify();
     }
 
     /// Build the pane on show if it is not built already, so a closed dock can
     /// be reopened and a restored one has something to draw.
+    ///
+    /// A collapsed dock builds nothing: its strip names a pane it is not
+    /// showing, and building one is expensive — the browser's WebView2 starts a
+    /// browser process.
     pub fn ensure_active(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.open {
+            return;
+        }
         if let Some(id) = self.active.clone() {
             self.ensure(&id, window, cx);
             self.activate(window, cx);

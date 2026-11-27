@@ -1,7 +1,8 @@
 # Drives the right dock: collapsing it must take the native webview with it.
 # The webview is a child HWND, not something GPUI paints, so the check is on the
 # child window's own visibility rather than on pixels -- a screenshot can be
-# occluded by any other window and would prove nothing.
+# occluded by any other window and would prove nothing. A collapsed dock builds
+# no webview at all, so the window may not exist until the dock is opened.
 param(
     [string]$OutDir = "$env:TEMP\ll-shots"
 )
@@ -90,10 +91,6 @@ function Click-At($x, $y) {
     Start-Sleep -Milliseconds 900
 }
 
-$webview = [Native]::FindWebView($handle)
-if ($webview -eq [IntPtr]::Zero) { throw "no webview child window was found" }
-Write-Host ("webview hwnd 0x{0:x}" -f [int64]$webview)
-
 function Assert-Visible($name, $expected) {
     $visible = [Native]::IsWindowVisible($webview)
     Write-Host "$name webview visible: $visible"
@@ -108,9 +105,25 @@ Save-Shot "01-start"
 $stripX = $w - 18
 $browserY = 48
 
-# A restored session may leave the dock collapsed, and a collapsed dock never
-# renders the pane, so the first click only normalises the starting state.
-if (-not [Native]::IsWindowVisible($webview)) {
+function Find-WebView($parent) {
+    for ($i = 0; $i -lt 12; $i++) {
+        $found = [Native]::FindWebView($parent)
+        if ($found -ne [IntPtr]::Zero) { return $found }
+        Start-Sleep -Milliseconds 250
+    }
+    return [IntPtr]::Zero
+}
+
+# A collapsed dock builds nothing at all now, so the webview only exists once
+# the dock is open -- and a restored session may leave it collapsed. Opening it
+# is the first click; it builds on the frame after the click, hence the poll.
+$webview = Find-WebView $handle
+if ($webview -eq [IntPtr]::Zero) {
+    Click-At $stripX $browserY
+    $webview = Find-WebView $handle
+    if ($webview -eq [IntPtr]::Zero) { throw "no webview child window was found" }
+    Write-Host ("webview hwnd 0x{0:x}" -f [int64]$webview)
+} elseif (-not [Native]::IsWindowVisible($webview)) {
     Click-At $stripX $browserY
 }
 Assert-Visible "01-open" $true
