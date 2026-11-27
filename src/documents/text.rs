@@ -306,11 +306,18 @@ impl TextView {
         let Ok(text) = std::fs::read_to_string(&self.path) else {
             return;
         };
+        self.dirty = false;
+        self.stale = false;
+        // Saving writes the buffer out, and the watcher reports that write as a
+        // disk change; replacing the buffer with its own text would reset the
+        // caret and the scroll on every save.
+        if self.editor.read(cx).value().as_ref() == text {
+            cx.notify();
+            return;
+        }
         // `set_value` emits no `Change`, so this cannot re-dirty the buffer.
         self.editor
             .update(cx, |editor, cx| editor.set_value(text, window, cx));
-        self.dirty = false;
-        self.stale = false;
         cx.notify();
     }
 

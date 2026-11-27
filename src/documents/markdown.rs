@@ -323,10 +323,17 @@ impl MarkdownView {
         let Ok(text) = std::fs::read_to_string(&self.path) else {
             return;
         };
-        self.editor
-            .update(cx, |editor, cx| editor.set_value(text, window, cx));
         self.dirty = false;
         self.stale = false;
+        // Saving writes the buffer out, and the watcher reports that write as a
+        // disk change; replacing the buffer with its own text would reset the
+        // caret and the scroll on every save.
+        if self.editor.read(cx).value().as_ref() == text {
+            cx.notify();
+            return;
+        }
+        self.editor
+            .update(cx, |editor, cx| editor.set_value(text, window, cx));
         cx.notify();
     }
 
