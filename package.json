@@ -3,6 +3,7 @@
   "private": true,
   "scripts": {
     "build:icon": "bun assets/build-icon.ts",
+    "release": "bun scripts/release.ts",
     "typecheck": "bun check"
   },
   "devDependencies": {

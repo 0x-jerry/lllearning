@@ -35,7 +35,15 @@ reach for it while iterating.
 
 ## Releasing
 
-`.github/workflows/release.yml` runs on a `v*` tag: it installs
+`bun run release <patch|minor|major|x.y.z> [--push]` (`scripts/release.ts`) is
+where a release starts: it bumps `Cargo.toml`, refreshes `Cargo.lock` with
+`cargo metadata`, commits `chore(release): v<version>`, and makes an annotated
+`v<version>` tag — refusing a dirty tree, a tag that already exists and a version
+that goes backwards, because each of those publishes something nobody can
+reproduce. `--push` sends exactly `HEAD` and the new tag; `--follow-tags` was
+wrong here, since it also sends every older reachable tag.
+
+`.github/workflows/release.yml` then runs on that tag: it installs
 `cargo-packager` (pinned — `[package.metadata.packager]` is a schema it owns),
 runs `cargo packager --release --formats nsis`, which is where the fat-LTO build
 actually happens (`before-packaging-command`), then zips the same exe as the

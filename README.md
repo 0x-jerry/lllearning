@@ -38,7 +38,15 @@ nothing extra. For an installer, `cargo packager --release` writes
 
 ## Release
 
-Pushing a tag publishes two artefacts to a GitHub release, built by
+```bash
+bun run release patch        # or minor, major, or an explicit 1.2.3
+bun run release minor --push # ...and push the commit and the tag
+```
+
+The script (`scripts/release.ts`) bumps `Cargo.toml`, refreshes `Cargo.lock`,
+commits `chore(release): v<version>` and makes an annotated tag — refusing a
+dirty tree, an existing tag and a version that goes backwards. The tag is then
+what publishes, through
 [`.github/workflows/release.yml`](.github/workflows/release.yml):
 
 | Artefact | What it is |
