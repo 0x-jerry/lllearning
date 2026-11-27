@@ -15,6 +15,10 @@
 //! native child window that outlives the element placing it (risk R1b) — also
 //! supplies [`PaneContent::activation`], and the shell calls it whenever the
 //! pane is shown or hidden.
+//!
+//! A pane that remembers something between runs supplies a [`PaneController`]
+//! with it, and the dock asks it for that state when the session is written and
+//! hands it back when the pane is built.
 
 pub mod browser;
 pub mod explorer;
@@ -47,6 +51,43 @@ pub struct PaneContext {
     pub shell: gpui::WeakEntity<crate::app::shell::AppShell>,
 }
 
+/// What a pane wants to remember about itself between runs.
+///
+/// The same bargain the document viewers strike (`documents::ViewState`): the
+/// pane defines the shape, the dock moves the value into the session file and
+/// back without looking inside, and a value this build cannot decode leaves the
+/// pane at its defaults rather than failing to build it (risk R12).
+pub type ViewState = serde_json::Value;
+
+/// Object-safe handle over a side pane, so the dock can ask any of them what it
+/// wants kept without knowing the pane type.
+///
+/// A built pane is an [`AnyView`], which carries an entity id and nothing else;
+/// only the provider knows the concrete type, so only the provider can hand out
+/// this. Every method has a default, because most panes keep nothing.
+pub trait PaneController {
+    /// The state the pane wants back next run, or `None` when its view is all
+    /// it needs.
+    fn view_state(&self, cx: &App) -> Option<ViewState> {
+        let _ = cx;
+        None
+    }
+
+    /// Apply what [`Self::view_state`] returned on the previous run.
+    ///
+    /// Called once, after the pane is built. A value this build does not
+    /// understand leaves the pane at its defaults rather than failing to build
+    /// it (risk R12).
+    fn restore_view_state(&self, state: &ViewState, window: &mut Window, cx: &mut App) {
+        let _ = (state, window, cx);
+    }
+}
+
+/// The controller for a pane that keeps nothing.
+pub struct StatelessPane;
+
+impl PaneController for StatelessPane {}
+
 /// Called with `true` when the pane is placed on screen and `false` when it
 /// leaves.
 ///
@@ -54,17 +95,20 @@ pub struct PaneContext {
 /// child window — is what this exists for; every other pane ignores it.
 pub type Activation = Rc<dyn Fn(bool, &mut Window, &mut App)>;
 
-/// What a provider returns: the view, and how to tell it it left the screen.
+/// What a provider returns: the view, its controller, and how to tell it it
+/// left the screen.
 pub struct PaneContent {
     pub view: AnyView,
+    pub controller: Rc<dyn PaneController>,
     pub activation: Option<Activation>,
 }
 
 impl PaneContent {
-    /// A pane with nothing to do when it is hidden.
+    /// A pane with nothing to do when it is hidden and nothing to remember.
     pub fn new(view: impl Into<AnyView>) -> Self {
         Self {
             view: view.into(),
+            controller: Rc::new(StatelessPane),
             activation: None,
         }
     }

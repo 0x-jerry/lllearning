@@ -952,7 +952,7 @@ impl AppShell {
             .map(|size| size.as_f32())
             .filter(|width| *width > 1.);
         match self.sides.get(&slot) {
-            Some(side) => side.read(cx).state(width),
+            Some(side) => side.read(cx).state(width, cx),
             None => SideState::default(),
         }
     }

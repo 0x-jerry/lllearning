@@ -101,11 +101,18 @@ to add a pane or a viewer, the seam is being bypassed and that is the bug.
 4. A pane whose contents can leave the screen (the browser's native child
    window) returns `PaneContent { activation: Some(..), .. }` instead; the shell
    calls it whenever the pane is shown or hidden (risk R1b).
-5. `pub mod my_pane;` and one `register_pane(cx, Rc::new(my_pane::MyPane));`
+5. A pane that remembers something between runs supplies a `PaneController`
+   beside its view (`PaneContent { controller, .. }`): the dock asks
+   `view_state` for what to write into the session and calls
+   `restore_view_state` once the pane is built. Both have defaults, so
+   `PaneContent::new` covers a pane that keeps nothing. The value is opaque to
+   the dock (`panes::ViewState`), and a state this build cannot decode is the
+   pane's cue to fall back to its defaults (risk R12).
+6. `pub mod my_pane;` and one `register_pane(cx, Rc::new(my_pane::MyPane));`
    line in `panes::register_builtins`.
 
 `panes/outline.rs` is a real example; `panes/browser.rs` is the one with an
-activation hook.
+activation hook and a controller, because the page it is on is worth keeping.
 
 ### Adding a document viewer
 

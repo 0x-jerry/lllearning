@@ -23,8 +23,9 @@ use gpui_rsx::rsx;
 use gpui_webview::WebView;
 
 use crate::{
+    documents::status_bar_helper::request_session_save,
     icons,
-    panes::{PaneContent, PaneContext, PaneProvider, PaneSlot},
+    panes::{PaneContent, PaneContext, PaneController, PaneProvider, PaneSlot, ViewState},
 };
 
 /// Shown until the user navigates somewhere, and when they clear the address bar.
@@ -32,6 +33,23 @@ const START_PAGE_HTML: &str = include_str!("../../statics/start.html");
 
 /// The document URL the engines report for the start page.
 const START_PAGE_URL: &str = "about:blank";
+
+/// What the pane keeps between runs: the page it was on.
+///
+/// Its own type, so the session file's shape is spelled here rather than in the
+/// shell, and a value this build cannot read leaves the start page in place
+/// rather than failing the restore (risk R12).
+#[derive(serde::Serialize, serde::Deserialize)]
+struct BrowserViewState {
+    #[serde(default)]
+    url: Option<String>,
+}
+
+/// The page the session said this pane was on, if it said anything usable.
+fn saved_url(state: &ViewState) -> Option<String> {
+    let state: BrowserViewState = serde_json::from_value(state.clone()).ok()?;
+    state.url
+}
 
 /// Prefix the injected script puts in front of the page URL it reports.
 const URL_MESSAGE_PREFIX: &str = "url:";
@@ -147,8 +165,10 @@ impl PaneProvider for BrowserPane {
         // whenever it stops being the one on show, and the pane hides the page
         // itself.
         let for_activation = view.downgrade();
+        let controller: Rc<dyn PaneController> = Rc::new(BrowserController { view: view.clone() });
         PaneContent {
             view: view.into(),
+            controller,
             activation: Some(Rc::new(move |active, _window, cx| {
                 let _ = for_activation.update(cx, |view, cx| view.set_webview_visible(active, cx));
             })),
@@ -166,7 +186,7 @@ pub struct BrowserView {
     /// (risk R1b).
     wanted_visible: bool,
     /// A navigation asked for before the page existed: an address typed in that
-    /// window, or a viewer that cannot play a file.
+    /// window, a viewer that cannot play a file, or the page the session saved.
     pending_url: Option<String>,
     address: Entity<InputState>,
     loading: bool,
@@ -370,7 +390,13 @@ impl BrowserView {
         } else {
             url
         };
-        self.set_address(shown, window, cx);
+        // Only a change to the bar is worth a write, and a navigation changes no
+        // document and no layout: without this request the address would only
+        // be written by the next unrelated save, or by the quit hook, which a
+        // killed process never reaches.
+        if self.set_address(shown, window, cx) {
+            request_session_save(&self.shell, window, cx);
+        }
     }
 
     /// Take the focus off the address bar, so typing goes back where it was.
@@ -380,15 +406,17 @@ impl BrowserView {
         }
     }
 
-    /// Show `url` in the address bar unless the user is editing it.
-    fn set_address(&mut self, url: String, window: &mut Window, cx: &mut Context<Self>) {
+    /// Show `url` in the address bar unless the user is editing it, and report
+    /// whether the bar changed.
+    fn set_address(&mut self, url: String, window: &mut Window, cx: &mut Context<Self>) -> bool {
         let editing =
             self.address_edited && self.address.read(cx).focus_handle(cx).is_focused(window);
         if editing || self.address.read(cx).value().as_ref() == url {
-            return;
+            return false;
         }
         self.address
             .update(cx, |state, cx| state.set_value(url, window, cx));
+        true
     }
 
     /// Navigate to what the user typed.
@@ -648,6 +676,44 @@ impl Render for BrowserView {
     }
 }
 
+/// What the dock asks for the pane's state, and hands back on the build after a
+/// restore.
+struct BrowserController {
+    view: Entity<BrowserView>,
+}
+
+impl PaneController for BrowserController {
+    fn view_state(&self, cx: &App) -> Option<ViewState> {
+        // The address bar *is* what the pane knows about the page: it is filled
+        // from the engine's load and history events, and it is empty on the
+        // start page or when the user clears it, which is what "nothing to
+        // come back to" means. The loading state and the error on show are
+        // consequences of a navigation, not something to replay.
+        let url = self.view.read(cx).address.read(cx).value().to_string();
+        if url.is_empty() {
+            return None;
+        }
+        match serde_json::to_value(BrowserViewState { url: Some(url) }) {
+            Ok(state) => Some(state),
+            // A state that cannot be encoded is a wiring bug, not something the
+            // user did: the pane opens on the start page next time.
+            Err(error) => {
+                log::warn!("could not encode the browser view state: {error}");
+                None
+            }
+        }
+    }
+
+    fn restore_view_state(&self, state: &ViewState, _window: &mut Window, cx: &mut App) {
+        let Some(url) = saved_url(state) else {
+            return;
+        };
+        // The page starts asynchronously, so this is almost always a request
+        // ahead of it; `navigate` queues it and `page_ready` replays it.
+        self.view.update(cx, |view, cx| view.navigate(&url, cx));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -714,5 +780,17 @@ mod tests {
         assert!(is_start_page(""));
         assert!(is_start_page(START_PAGE_URL));
         assert!(!is_start_page("https://example.com"));
+    }
+
+    #[test]
+    fn a_saved_page_is_read_back() {
+        let state = serde_json::json!({ "url": "https://a.b/c" });
+        assert_eq!(saved_url(&state).as_deref(), Some("https://a.b/c"));
+    }
+
+    #[test]
+    fn a_saved_state_this_build_cannot_read_leaves_the_start_page() {
+        assert_eq!(saved_url(&serde_json::json!({ "layout": "split" })), None);
+        assert_eq!(saved_url(&serde_json::json!(42)), None);
     }
 }

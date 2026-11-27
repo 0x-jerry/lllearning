@@ -56,6 +56,10 @@ pub struct SideState {
     /// The dock's width, if it has been laid out.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub width: Option<f32>,
+    /// The pane's own state, opaque here: only the pane that wrote it knows what
+    /// it means (see `panes::ViewState`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub state: Option<serde_json::Value>,
 }
 
 impl Default for SideState {
@@ -64,6 +68,7 @@ impl Default for SideState {
             active: None,
             open: true,
             width: None,
+            state: None,
         }
     }
 }
@@ -209,11 +214,13 @@ mod tests {
                 active: Some("explorer".to_owned()),
                 open: true,
                 width: Some(260.),
+                state: None,
             },
             right: SideState {
                 active: Some("browser".to_owned()),
                 open: false,
                 width: Some(420.),
+                state: Some(serde_json::json!({ "url": "https://a.b" })),
             },
             documents: vec![SavedDocument {
                 path: PathBuf::from("/work/notes.md"),
@@ -274,6 +281,7 @@ mod tests {
         let side: SideState = serde_json::from_str(r#"{"active":"explorer"}"#).expect("decode");
         assert!(side.open);
         assert_eq!(side.width, None);
+        assert_eq!(side.state, None);
     }
 
     #[test]

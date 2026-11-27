@@ -12,6 +12,7 @@
 //! would throw away the explorer's expansion state.
 
 use std::collections::HashMap;
+use std::rc::Rc;
 
 use gpui::component::ActiveTheme as _;
 use gpui::{
@@ -22,7 +23,7 @@ use gpui_rsx::rsx;
 
 use crate::{
     app::{activity_bar::ActivityBar, shell::empty_state},
-    panes::{self, Activation, PaneContext, PaneSlot},
+    panes::{self, Activation, PaneContext, PaneController, PaneSlot, ViewState},
     state::SideState,
     workspace::Workspace,
 };
@@ -30,6 +31,9 @@ use crate::{
 /// A pane the dock has built, whether or not it is the one on show.
 struct MountedPane {
     view: AnyView,
+    /// What the dock asks for the pane's state, and hands it back on the build
+    /// after a restore.
+    controller: Rc<dyn PaneController>,
     /// What to call when the pane leaves or re-enters the screen. The browser
     /// uses it to hide its page (risk R1b).
     activation: Option<Activation>,
@@ -60,6 +64,13 @@ pub struct SideView {
     /// The width the session asked for, used until the resizable group has
     /// measured itself.
     saved_width: Option<gpui::Pixels>,
+    /// The state the session saved, and the pane id it belongs to.
+    ///
+    /// Kept here rather than handed straight to the build because the pane is
+    /// built later — after the first frame, or when a collapsed dock reopens —
+    /// and because a dock that is still collapsed has to keep it for the
+    /// session write it never built a pane for.
+    saved_state: Option<(String, ViewState)>,
     workspace: Entity<Workspace>,
     shell: gpui::WeakEntity<crate::app::shell::AppShell>,
 }
@@ -78,6 +89,7 @@ impl SideView {
             open: false,
             panes: HashMap::new(),
             saved_width: None,
+            saved_state: None,
             workspace,
             shell,
         }
@@ -113,6 +125,15 @@ impl SideView {
         });
 
         self.open = saved.open && id.is_some();
+        // Only for the pane the state was written by: a dock whose saved id
+        // this build lost falls back to its first pane, which knows nothing
+        // about what the missing one kept.
+        self.saved_state = match (&id, saved.active.as_deref()) {
+            (Some(id), Some(saved_id)) if id == saved_id => {
+                saved.state.clone().map(|state| (id.clone(), state))
+            }
+            _ => None,
+        };
         self.active = id;
         if let Some(width) = saved.width.filter(|width| *width > 0.) {
             self.saved_width = Some(gpui::px(width));
@@ -190,12 +211,21 @@ impl SideView {
             window,
             cx,
         );
+        // What the session saved for this pane, if it was this pane that saved
+        // it: a dock shows several over its lifetime, and handing one another's
+        // state would restore the wrong thing.
+        if let Some((saved_id, state)) = &self.saved_state
+            && saved_id == provider_id
+        {
+            content.controller.restore_view_state(state, window, cx);
+        }
         // Built off screen, so a pane whose contents can leave the screen starts
         // hidden and the next transition shows it.
         self.panes.insert(
             provider_id.to_owned(),
             MountedPane {
                 view: content.view,
+                controller: content.controller,
                 activation: content.activation,
                 active: false,
             },
@@ -220,11 +250,29 @@ impl SideView {
     /// while the dock is collapsed: its panel is hidden then and measures
     /// nothing. The fallback keeps the width the user chose instead of
     /// forgetting it on every save.
-    pub fn state(&self, width: Option<f32>) -> SideState {
+    pub fn state(&self, width: Option<f32>, cx: &App) -> SideState {
         SideState {
             active: self.active.clone(),
             open: self.open,
             width: width.or_else(|| self.saved_width.map(|width| width.as_f32())),
+            state: self.pane_state(cx),
+        }
+    }
+
+    /// The state of the pane on show.
+    ///
+    /// A pane that was never built — the dock is collapsed, so it builds
+    /// nothing (risk R22) — has no view to ask, and the state it came in with is
+    /// still the only answer there is.
+    fn pane_state(&self, cx: &App) -> Option<ViewState> {
+        let active = self.active.as_ref()?;
+        match self.panes.get(active) {
+            Some(pane) => pane.controller.view_state(cx),
+            None => self
+                .saved_state
+                .as_ref()
+                .filter(|(saved_id, _)| saved_id == active)
+                .map(|(_, state)| state.clone()),
         }
     }
 
