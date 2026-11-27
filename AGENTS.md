@@ -136,25 +136,29 @@ theme colours and border already applied. `documents::status_bar_helper` is the
 seam above it: `editor_status_bar(cx, file_type, text, cursor)` returns that
 component with the file type on the left and the caret, line and character
 counts on the right, and a viewer chains its own actions on with
-`.right(..)` — `markdown`'s layout switch is one. The counts are derived from
+`.right(..)` — soft wrap and `markdown`'s layout switch are those today, and
+both switches are built here too (`wrap_switch`, `Icon::WrapText`, tinted to
+say which state it is in) because every editor viewer needs the same three
+things: the glyph, the tint and the session write. The counts are derived from
 the buffer it is handed, so they cannot drift from the text; but the bar does
 not ask to be redrawn, so a viewer whose caret moves without a change has to
 re-render itself (see `MarkdownView::new`, which observes the editor and
 compares the position — observing the editor's notifications alone would redraw
 the view twice a second, because its blink cycle runs off its own entity).
 
-A viewer keeps what it wants to remember about itself — the markdown viewer's
-layout, today — by answering `view_state` and applying it in
-`restore_view_state`. Each viewer defines its own state type there
-(`MarkdownViewState`, a struct of serde-derived fields) and the seam's
-`ViewState` carries it opaquely, so the shell moves it into the session file and
-back without knowing what is in it. Names inside it are written to disk: a value
-this build cannot decode leaves the viewer at its defaults rather than failing
-the open (risk R12). The session is written on quit *and* by
+A viewer keeps what it wants to remember about itself — the markdown layout, both
+editors' soft wrap, the caret position — by answering `view_state` and applying
+it in `restore_view_state`. Each viewer defines its own state type there
+(`MarkdownViewState`, `TextViewState`: structs of serde-derived fields, with the
+fields a fresh tab would not have as `Option` so an older session still decodes)
+and the seam's `ViewState` carries it opaquely, so the shell moves it into the
+session file and back without knowing what is in it. Names inside it are written
+to disk: a value this build cannot decode leaves the viewer at its defaults
+rather than failing the open (risk R12). The session is written on quit *and* by
 `AppShell::schedule_session_save`, and the driver scripts kill the process
 rather than quitting it, so a change only the viewer knows about has to ask for
-the write itself — `MarkdownView::cycle_layout` is why that method is
-`pub(crate)` rather than private.
+the write itself — `status_bar_helper::request_session_save` is that call, and
+why `schedule_session_save` is `pub(crate)` rather than private.
 
 `score` returns `Option<u8>`, higher wins, `None` means "cannot open". The
 current table — asserted by tests, so change the tests with it:

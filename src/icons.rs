@@ -187,7 +187,7 @@ mod tests {
     /// to cover. Spelled out here so the contract is visible in one place;
     /// `build/lucide.rs` derives the same set from the `Icon::` uses under
     /// `src/`, and this test is what notices the two disagreeing.
-    const DRAWN_ICONS: [Icon; 16] = [
+    const DRAWN_ICONS: [Icon; 17] = [
         Icon::ArrowLeft,
         Icon::ArrowRight,
         Icon::Book,
@@ -203,6 +203,7 @@ mod tests {
         Icon::RotateCw,
         Icon::SquarePen,
         Icon::TriangleAlert,
+        Icon::WrapText,
         Icon::X,
     ];
 

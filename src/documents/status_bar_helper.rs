@@ -17,10 +17,23 @@
 //! buffer is the whole cost. What it does *not* do is ask to be redrawn — a
 //! viewer whose caret can move without the buffer changing has to re-render
 //! itself (`MarkdownView::new` compares the position for exactly that reason).
+//!
+//! The switches an editor viewer puts in that bar live here too, because every
+//! one of them needs the same three things: the glyph, the tint that says which
+//! state it is in, and the request for a session write ([`request_session_save`]).
 
-use gpui::component::ActiveTheme as _;
-use gpui::component::status_bar::StatusBar;
-use gpui::{App, ParentElement as _, SharedString, Styled as _, div};
+use gpui::component::{
+    ActiveTheme as _,
+    button::{Button, ButtonVariants as _},
+    status_bar::StatusBar,
+};
+use gpui::{
+    App, ClickEvent, IntoElement, ParentElement as _, SharedString, Styled as _, WeakEntity,
+    Window, div, px,
+};
+use gpui_rsx::rsx;
+
+use crate::{app::shell::AppShell, icons};
 
 /// The status bar for `text`, shown as `file_type`.
 ///
@@ -47,6 +60,49 @@ pub fn editor_status_bar(
             character_count(text),
             "character",
         )))
+}
+
+/// The status bar's switch for the editor's soft wrap.
+///
+/// Both states draw the same glyph, so the tint carries the state: wrapped is
+/// the foreground colour, unwrapped the bar's own muted one. Only the view can
+/// reach its editor, so the click is the caller's.
+pub fn wrap_switch(
+    cx: &App,
+    wrap: bool,
+    on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+) -> impl IntoElement {
+    let glyph = icons::icon(lucide_icons::Icon::WrapText, 14.);
+    let glyph = if wrap {
+        glyph.text_color(cx.theme().foreground)
+    } else {
+        glyph
+    };
+
+    // The square is spelled in `class` rather than with `xsmall`: that variant's
+    // padding does not fit a status bar item.
+    rsx! {
+        <Button("editor-wrap")
+            ghost
+            class="size-5 p-0"
+            tooltip={if wrap { "Line wrap is on" } else { "Line wrap is off" }}
+            onClick={on_click}
+        >
+            {glyph}
+        </Button>
+    }
+}
+
+/// Ask the shell to write the session.
+///
+/// A viewer's own settings — the wrap switch, the markdown layout — change
+/// nothing the shell is watching for, and the quit hook alone is not enough
+/// because anything that kills the app never reaches it. Every switch that a
+/// `view_state` restores calls this, or it is only saved by the next unrelated
+/// write.
+pub fn request_session_save(shell: &WeakEntity<AppShell>, window: &mut Window, cx: &mut App) {
+    // A shell that is gone has nothing to write; the change itself still stands.
+    let _ = shell.update(cx, |shell, cx| shell.schedule_session_save(window, cx));
 }
 
 /// How many lines the editor draws for `text`.

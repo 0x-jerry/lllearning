@@ -18,14 +18,16 @@ use gpui::component::{
 use gpui::{
     App, AppContext as _, Context, Entity, EventEmitter, FocusHandle, Focusable,
     InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString, Styled as _,
-    Subscription, Window, div, px,
+    Subscription, WeakEntity, Window, div, px,
 };
 use gpui_rsx::rsx;
 
 use super::{
     DocumentContent, DocumentController, DocumentEvent, DocumentProvider, OpenContext, Sniff,
-    sniff, status_bar_helper::editor_status_bar,
+    sniff,
+    status_bar_helper::{editor_status_bar, request_session_save, wrap_switch},
 };
+use crate::app::shell::AppShell;
 
 /// Scores: high enough that nothing else claims a text file by accident, low
 /// enough that every specific provider beats it.
@@ -86,7 +88,7 @@ impl DocumentProvider for TextProvider {
                 .line_number(true)
         });
 
-        let view = cx.new(|cx| TextView::new(path, language, editor, cx));
+        let view = cx.new(|cx| TextView::new(path, language, editor, ctx.shell, cx));
         let handle = view.clone();
         let controller: Rc<dyn DocumentController> = Rc::new(TextController { view: handle });
         let watched = view.clone();
@@ -158,6 +160,62 @@ impl DocumentController for TextController {
         let position = self.view.read(cx).editor.read(cx).cursor_position();
         Some((position.line + 1, position.character + 1))
     }
+
+    fn view_state(&self, cx: &App) -> Option<super::ViewState> {
+        // A state that cannot be encoded is a wiring bug, not something the
+        // user did: log it and let the tab reopen at its defaults next time.
+        let view = self.view.read(cx);
+        match serde_json::to_value(TextViewState {
+            wrap: Some(view.wrap),
+            cursor: Some(view.editor.read(cx).cursor_position()),
+        }) {
+            Ok(state) => Some(state),
+            Err(error) => {
+                log::warn!("could not encode the text view state: {error}");
+                None
+            }
+        }
+    }
+
+    fn restore_view_state(&self, state: &super::ViewState, window: &mut Window, cx: &mut App) {
+        // A value this build does not understand leaves the default in place
+        // rather than failing the open (risk R12).
+        let Ok(state) = serde_json::from_value::<TextViewState>(state.clone()) else {
+            return;
+        };
+        self.view.update(cx, |view, cx| {
+            view.wrap = state.wrap.unwrap_or(true);
+            view.editor.update(cx, |editor, cx| {
+                editor.set_soft_wrap(view.wrap, window, cx);
+                // Moving the caret is not an edit: `set_cursor_position` emits
+                // no change, so a restored tab is not born dirty (risk R10).
+                // It also focuses the editor, which the shell corrects by
+                // focusing the active tab once every document is restored.
+                if let Some(position) = state.cursor {
+                    editor.set_cursor_position(position, window, cx);
+                }
+            });
+            // The caret moved under the status bar's feet, so the position it
+            // redraws from is taken again rather than left behind.
+            view.last_cursor = view.editor.read(cx).cursor_position();
+            cx.notify();
+        });
+    }
+}
+
+/// What the text viewer keeps between runs.
+///
+/// Its own type, so the session file's shape is spelled here rather than in the
+/// shell. The optional fields are what a session written before they existed
+/// leaves out; each then falls back to what a fresh tab would do.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct TextViewState {
+    /// Soft wrap, as the status bar's switch left it.
+    #[serde(default)]
+    wrap: Option<bool>,
+    /// Where the caret was, so a long file reopens where it was left.
+    #[serde(default)]
+    cursor: Option<Position>,
 }
 
 /// The text viewer's own state: the path, the language, and the editor.
@@ -173,6 +231,11 @@ pub struct TextView {
     /// The caret position the status bar was last drawn for, so a notify that
     /// does not move the caret does not redraw the view.
     last_cursor: Position,
+    /// Whether the editor wraps long lines, as the status bar's switch leaves it.
+    wrap: bool,
+    /// The shell, because the wrap choice is part of the session and only the
+    /// shell writes that file (see [`Self::toggle_wrap`]).
+    shell: WeakEntity<AppShell>,
     /// Dropped with the view, so the subscription does not outlive it.
     _change: Subscription,
     _cursor: Subscription,
@@ -183,6 +246,7 @@ impl TextView {
         path: PathBuf,
         language: &'static str,
         editor: Entity<EditorState>,
+        shell: WeakEntity<AppShell>,
         cx: &mut Context<Self>,
     ) -> Self {
         let focus_handle = cx.focus_handle();
@@ -219,6 +283,8 @@ impl TextView {
             dirty: false,
             stale: false,
             last_cursor,
+            wrap: true,
+            shell,
             _change: change,
             _cursor: cursor,
         }
@@ -251,6 +317,16 @@ impl TextView {
     fn focus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.focus_handle.focus(window, cx);
     }
+
+    /// Turn soft wrap on or off, and save the choice with the tab.
+    fn toggle_wrap(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.wrap = !self.wrap;
+        let wrap = self.wrap;
+        self.editor
+            .update(cx, |editor, cx| editor.set_soft_wrap(wrap, window, cx));
+        cx.notify();
+        request_session_save(&self.shell, window, cx);
+    }
 }
 
 impl Focusable for TextView {
@@ -274,7 +350,12 @@ impl Render for TextView {
             sniff::language_label(self.language),
             &text,
             Some((position.line + 1, position.character + 1)),
-        );
+        )
+        .right(wrap_switch(
+            cx,
+            self.wrap,
+            cx.listener(|this, _, window, cx| this.toggle_wrap(window, cx)),
+        ));
 
         rsx! {
             <div

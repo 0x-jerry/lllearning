@@ -183,11 +183,12 @@ pub trait DocumentController {
 
     /// Apply what [`Self::view_state`] returned on the previous run.
     ///
-    /// Called once, after the viewer is built and before it is first drawn on
-    /// screen. A value this build does not understand leaves the viewer at its
-    /// defaults rather than failing the open.
-    fn restore_view_state(&self, state: &ViewState, cx: &mut App) {
-        let _ = (state, cx);
+    /// Called once, after the viewer is built. A value this build does not
+    /// understand leaves the viewer at its defaults rather than failing the
+    /// open. The window is here because a restored caret or wrap setting goes
+    /// back through the editor, which needs one.
+    fn restore_view_state(&self, state: &ViewState, window: &mut Window, cx: &mut App) {
+        let _ = (state, window, cx);
     }
 
     /// The outline of the document's contents, if this viewer has one.

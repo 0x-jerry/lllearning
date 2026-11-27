@@ -453,7 +453,7 @@ impl AppShell {
                     // first: applying it re-enters the app through `cx`.
                     if let Some(state) = &saved.view {
                         let controller = document.read(cx).controller().clone();
-                        controller.restore_view_state(state, cx);
+                        controller.restore_view_state(state, window, cx);
                     }
                     self.documents.push(document)
                 }

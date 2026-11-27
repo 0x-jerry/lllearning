@@ -24,9 +24,10 @@ use gpui_rsx::rsx;
 
 use super::{
     DocumentContent, DocumentController, DocumentEvent, DocumentProvider, OpenContext, Sniff,
-    sniff, status_bar_helper::editor_status_bar,
+    sniff,
+    status_bar_helper::{editor_status_bar, request_session_save, wrap_switch},
 };
-use crate::app::shell::AppShell;
+use crate::{app::shell::AppShell, icons};
 
 /// Markdown beats text, and loses to image and video.
 const SCORE: u8 = 70;
@@ -128,8 +129,11 @@ impl DocumentController for MarkdownController {
     fn view_state(&self, cx: &App) -> Option<super::ViewState> {
         // A state that cannot be encoded is a wiring bug, not something the
         // user did: log it and let the tab reopen at its defaults next time.
+        let view = self.view.read(cx);
         match serde_json::to_value(MarkdownViewState {
-            layout: self.view.read(cx).layout,
+            layout: view.layout,
+            wrap: Some(view.wrap),
+            cursor: Some(view.editor.read(cx).cursor_position()),
         }) {
             Ok(state) => Some(state),
             Err(error) => {
@@ -139,7 +143,7 @@ impl DocumentController for MarkdownController {
         }
     }
 
-    fn restore_view_state(&self, state: &super::ViewState, cx: &mut App) {
+    fn restore_view_state(&self, state: &super::ViewState, window: &mut Window, cx: &mut App) {
         // A value this build does not understand leaves the default in place
         // rather than failing the open (risk R12).
         let Ok(state) = serde_json::from_value::<MarkdownViewState>(state.clone()) else {
@@ -147,6 +151,20 @@ impl DocumentController for MarkdownController {
         };
         self.view.update(cx, |view, cx| {
             view.layout = state.layout;
+            view.wrap = state.wrap.unwrap_or(true);
+            view.editor.update(cx, |editor, cx| {
+                editor.set_soft_wrap(view.wrap, window, cx);
+                // Moving the caret is not an edit: `set_cursor_position` emits
+                // no change, so a restored tab is not born dirty (risk R10).
+                // It also focuses the editor, which the shell corrects by
+                // focusing the active tab once every document is restored.
+                if let Some(position) = state.cursor {
+                    editor.set_cursor_position(position, window, cx);
+                }
+            });
+            // The caret moved under the status bar's feet, so the position it
+            // redraws from is taken again rather than left behind.
+            view.last_cursor = view.editor.read(cx).cursor_position();
             cx.notify();
         });
     }
@@ -200,9 +218,18 @@ enum Layout {
 /// Its own type, so the session file's shape is spelled here rather than in the
 /// shell: a layout name this build does not know fails to decode and the viewer
 /// opens at its default.
+///
+/// The optional fields are what a session written before they existed leaves
+/// out; each then falls back to what a fresh tab would do.
 #[derive(serde::Serialize, serde::Deserialize)]
 struct MarkdownViewState {
     layout: Layout,
+    /// Soft wrap, as the status bar's switch left it.
+    #[serde(default)]
+    wrap: Option<bool>,
+    /// Where the caret was, so a long document reopens where it was left.
+    #[serde(default)]
+    cursor: Option<Position>,
 }
 
 impl Layout {
@@ -225,6 +252,8 @@ pub struct MarkdownView {
     dirty: bool,
     stale: bool,
     layout: Layout,
+    /// Whether the editor wraps long lines, as the status bar's switch leaves it.
+    wrap: bool,
     /// The shell, because the layout is part of the session and only the shell
     /// writes that file (see [`Self::cycle_layout`]).
     shell: WeakEntity<AppShell>,
@@ -272,6 +301,7 @@ impl MarkdownView {
             dirty: false,
             stale: false,
             layout: Layout::default(),
+            wrap: true,
             shell,
             last_cursor,
             _change: change,
@@ -316,10 +346,17 @@ impl MarkdownView {
             Layout::PreviewOnly => Layout::Split,
         };
         cx.notify();
-        // A shell that is gone has nothing to write; the toggle still applies.
-        let _ = self
-            .shell
-            .update(cx, |shell, cx| shell.schedule_session_save(window, cx));
+        request_session_save(&self.shell, window, cx);
+    }
+
+    /// Turn soft wrap on or off, and save the choice with the tab.
+    fn toggle_wrap(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.wrap = !self.wrap;
+        let wrap = self.wrap;
+        self.editor
+            .update(cx, |editor, cx| editor.set_soft_wrap(wrap, window, cx));
+        cx.notify();
+        request_session_save(&self.shell, window, cx);
     }
 
     fn layout_label(&self) -> &'static str {
@@ -360,7 +397,7 @@ impl Render for MarkdownView {
                 tooltip={self.layout_label()}
                 onClick={cx.listener(|this, _, window, cx| this.cycle_layout(window, cx))}
             >
-                {crate::icons::icon(self.layout.icon(), 14.)}
+                {icons::icon(self.layout.icon(), 14.)}
             </Button>
         };
         let status = editor_status_bar(
@@ -369,6 +406,11 @@ impl Render for MarkdownView {
             &text,
             Some((position.line + 1, position.character + 1)),
         )
+        .right(wrap_switch(
+            cx,
+            self.wrap,
+            cx.listener(|this, _, window, cx| this.toggle_wrap(window, cx)),
+        ))
         .right(layout_switch);
 
         rsx! {
