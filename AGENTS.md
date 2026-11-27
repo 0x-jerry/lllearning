@@ -43,6 +43,13 @@ that goes backwards, because each of those publishes something nobody can
 reproduce. `--push` sends exactly `HEAD` and the new tag; `--follow-tags` was
 wrong here, since it also sends every older reachable tag.
 
+The manifest is read and written through `TOML.parse`/`TOML.stringify`, not a
+regex — and `stringify` has one layout and no options, so a bump rewrites the
+file: tables in document order (a package's `metadata` is hoisted next to
+`[package]`), inline tables expanded into their own `[dependencies.name]`, and LF.
+The document is otherwise identical — parse both and compare — and once the
+layout is canonical a bump is a one-line diff again.
+
 `.github/workflows/release.yml` then runs on that tag: it installs
 `cargo-packager` (pinned — `[package.metadata.packager]` is a schema it owns),
 runs `cargo packager --release --formats nsis`, which is where the fat-LTO build

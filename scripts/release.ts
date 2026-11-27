@@ -28,9 +28,11 @@ if (requested === undefined) {
 }
 
 const manifest = await Bun.file(CARGO_TOML).text();
-const current = (TOML.parse(manifest) as Manifest).package?.version;
-if (current === undefined) fail(`${CARGO_TOML} has no [package] version`);
+const parsed = TOML.parse(manifest) as Manifest;
+const packageTable = parsed.package;
+if (packageTable?.version === undefined) fail(`${CARGO_TOML} has no [package] version`);
 
+const current = packageTable.version;
 const next = bump(current, requested);
 const tag = `v${next}`;
 
@@ -50,15 +52,12 @@ const branch = (await $`git rev-parse --abbrev-ref HEAD`.quiet().text()).trim();
 // The lockfile records the package's own version too. `cargo metadata` rewrites
 // it from the manifest, which is the one place that knows how a lock is encoded.
 //
-// The manifest itself is edited as text: `TOML.stringify` would rewrite the file —
-// its comments, section order and inline dependency tables — to publish a bump.
-// So the one line is replaced and the result parsed, which is what proves the
-// line that changed is the version and not something else's.
-const bumped = manifest.replace(/^version = "([^"]+)"/m, `version = "${next}"`);
-if ((TOML.parse(bumped) as Manifest).package?.version !== next) {
-  fail(`${CARGO_TOML}: could not pin the [package] version to ${next}`);
-}
-await Bun.write(CARGO_TOML, bumped);
+// `TOML.stringify` renders the manifest in its own layout — tables in document
+// order, inline tables expanded, LF — so a bump rewrites the file rather than one
+// line of it. Parse both sides and the document is identical apart from the
+// version; what changes is the shape, once.
+packageTable.version = next;
+await Bun.write(CARGO_TOML, TOML.stringify(parsed));
 
 const refreshed = await $`cargo metadata --format-version 1`.quiet().nothrow();
 if (refreshed.exitCode !== 0) {
