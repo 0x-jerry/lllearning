@@ -3,27 +3,18 @@ name = "lllearning"
 version = "0.1.0"
 edition = "2024"
 publish = false
-# `build/` holds the font-subsetting build script; the path is spelled out so it
-# can be a directory of modules rather than one flat `build.rs`.
 build = "build/main.rs"
 
 [features]
 inspector = []
 
-# The build script subsets the two icon fonts down to the glyphs the app draws,
-# which needs a font parser and subsetter at build time only. Both are pure
-# Rust, so the build has no external tool to install.
 [build-dependencies]
 allsorts = { version = "0.17", default-features = false, features = ["flate2", "flate2_rust"] }
 lucide-icons = "1.80"
 
 [dependencies]
-# Aliased so `gpui::` paths match what `rsx!` expansions generate.
 gpui = { package = "gpui-kit", version = "0.11.0", features = [
     "gpui-fast",
-    # Syntax highlighting in the editor pane. `tree-sitter` on its own brings
-    # JSON; the rest are the grammars the file-type table in `documents::sniff`
-    # names. Dropping one here only costs highlighting for that language.
     "tree-sitter",
     "tree-sitter-bash",
     "tree-sitter-javascript",
@@ -46,14 +37,8 @@ notify = "8"
 dirs = "6"
 lucide-icons = "1.80"
 ignore = "0.4"
-# Startup timing (`logging`): the facade the app writes through, and the sink it
-# installs once in `main`. `simple_logger`'s default is stdout — its `stderr`
-# feature is off on purpose, so a redirected run captures the marks and the
-# crash-report `eprintln!`s stay on separate streams.
 log = "0.4"
 simple_logger = "5"
-# File-type glyphs for the explorer, and the nerd font in `assets/` that draws
-# them. lucide has no per-language file icons.
 devicons = "0.6.13"
 
 [target.'cfg(target_os = "windows")'.dependencies]
@@ -67,20 +52,6 @@ category = "Utility"
 icons = ["assets/icon.png", "assets/icon.ico"]
 before-packaging-command = "cargo build --release"
 
-# The shipped binary is what a user downloads, and an un-inlined, un-stripped
-# release build is 42 MB of mostly duplicate generic instantiations: GPUI's
-# element and view machinery is monomorphised per type, so without LTO every
-# crate that touches it emits its own copy.
-#
-# LTO is the expensive one — a full rebuild goes from ~30 s to ~9 min on this
-# machine — but it is what takes the binary from 42 MB to 28 MB, and this is a
-# `publish = false` desktop app whose release build runs once per version.
-# `cargo build` (debug) and `cargo test` are unaffected.
-#
-# `panic = "abort"` is deliberately *not* set, even though it would shave a
-# little more: gpui-base wraps the `markdown` parser in `catch_unwind` because
-# that crate panics on some inputs, and this app opens arbitrary user markdown.
-# Aborting turns a malformed file into a crash.
 [profile.release]
 lto = "fat"
 codegen-units = 1
