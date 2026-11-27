@@ -151,7 +151,7 @@ impl Render for ExplorerView {
                     border_color={cx.theme().border}
                 >
                     <div class="flex flex-row items-center gap-1 min-w-0">
-                        {icons::icon(lucide_icons::Icon::FolderOpen, 14.)}
+                        {icons::icon(lucide_icons::Icon::Book, 14.)}
                         <div class="text-xs truncate">{label}</div>
                     </div>
                     <div class="flex flex-row items-center gap-1">
