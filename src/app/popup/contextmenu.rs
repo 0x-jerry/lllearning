@@ -29,7 +29,7 @@ use crate::window;
 
 /// One command in the menu.
 pub struct MenuItem<T> {
-    /// Element id, so a test and a driver script can name the row.
+    /// Element id, so the row can be named from outside the render.
     pub id: &'static str,
     pub label: SharedString,
     pub value: T,

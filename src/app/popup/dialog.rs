@@ -116,7 +116,7 @@ impl Default for DialogOptions {
 
 /// One footer button, and the answer it stands for.
 pub struct DialogAction<T> {
-    /// Element id, so a driver script and a test can name the button.
+    /// Element id, so the button can be named from outside the render.
     pub id: &'static str,
     pub label: SharedString,
     /// Drawn as the default button, and what Enter activates.

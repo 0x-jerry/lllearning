@@ -18,7 +18,7 @@ lookup, not a typo.
 
 ```bash
 cargo check --all-targets          # fast feedback
-cargo build                        # the binary the driver scripts use
+cargo build                        # the binary the release workflow packages
 cargo test                         # 92 tests, ~0.3s
 cargo fmt --check
 cargo clippy --all-targets --all-features -- -D warnings
@@ -199,9 +199,9 @@ and the seam's `ViewState` carries it opaquely, so the shell moves it into the
 session file and back without knowing what is in it. Names inside it are written
 to disk: a value this build cannot decode leaves the viewer at its defaults
 rather than failing the open (risk R12). The session is written on quit *and* by
-`AppShell::schedule_session_save`, and the driver scripts kill the process
-rather than quitting it, so a change only the viewer knows about has to ask for
-the write itself — `status_bar_helper::request_session_save` is that call, and
+`AppShell::schedule_session_save`, and the process can be killed rather than
+quit (the quit hook never runs), so a change only the viewer knows about has to
+ask for the write itself — `status_bar_helper::request_session_save` is that call, and
 why `schedule_session_save` is `pub(crate)` rather than private.
 
 `score` returns `Option<u8>`, higher wins, `None` means "cannot open". The
@@ -431,7 +431,7 @@ into a dangling lookup.
 | # | Risk | Mitigation |
 | --- | --- | --- |
 | R1 | **WebView2 covers GPUI overlays** and cannot be clipped to a partial region on Windows. A dialog or dropdown opened over the right dock hides behind the page. | Modal dialogs render at the window root; the browser pane never anchors a dropdown. Documented as a known limitation in `README.md`. |
-| R1b | **The webview is a native child window, so it outlives the element that places it.** Collapsing the dock, switching pane or drawing the pane's error over the page leaves the page painted at its last bounds. | The pane hides and shows the native view itself: `PaneContent::activation` from the shell on every show/hide transition, and every render while an error is on show. Asserted by `scripts/drive-webview-hide.ps1`. |
+| R1b | **The webview is a native child window, so it outlives the element that places it.** Collapsing the dock, switching pane or drawing the pane's error over the page leaves the page painted at its last bounds. | The pane hides and shows the native view itself: `PaneContent::activation` from the shell on every show/hide transition, and every render while an error is on show. |
 | R2 | WebView2 profile lock: a second instance fails to start the webview. | The browser pane shows a "could not start" panel instead of panicking. |
 | R3 | `TreeItem::is_folder()` is `!children.is_empty()`, so an empty directory is not a folder and cannot be expanded. | Give an empty or unreadable directory a disabled placeholder child; skip it when rendering and when resolving clicks (`workspace/tree.rs`). |
 | R4 | **No native video element in GPUI.** | *(resolved)* The placeholder provider is gone; nothing claims video extensions, so a video file opens the binary explanation panel. A real viewer is one provider plus a score row. |
@@ -451,46 +451,30 @@ into a dangling lookup.
 | R17 | **An in-window dialog or popover is covered by the webview.** `window.open_dialog` and an anchored popover draw into the main window's element tree, under the browser pane's native child window — the same cause as R1, which is why R1 alone did not cover it. | Dialogs and context menus are their own window (`app/popup/`), owned by the caller and reporting their answer back. Toasts and the tab bar's own `menu` still draw in-window, so R1 still governs them. |
 | R19 | **A black window at startup.** The window is shown before its first frame is presented, and the platform's window class paints black until one is; anything expensive in the window's build closure — building a pane, reading a folder, starting the watcher — widens that gap. It measured ~570 ms on this machine, with the browser pane's WebView2 as the bulk of it. | `AppShell::new` does only cheap work and defers `restore_session` past the first presented frame; the folder listing and the watcher start on the background executor (R8). Gap is ~90 ms. See the two traps above for why the deferral needs two hops. |
 | R20 | **A restart loses every restored tab.** `Workspace::set_root` emits `RootChanged`, whose handler closes all documents and resets the docks; the restore calls `set_root` itself, so it discarded the tabs it had just reopened — and the next session write dropped them from the file too. | `AppShell::restoring` is raised around the restore's `set_root` and the `RootChanged` handler returns early for it. Only a genuine folder switch resets the tabs. |
-| R21 | **Starting the webview stalls the whole app.** `wry`'s synchronous build waits for WebView2 inside a nested Win32 message pump, so GPUI's loop, its executor and every frame freeze for the length of the wait (~350 ms here) — inside a click handler when the dock is opened, and inside the restore at startup. | The pane builds its page from a task that awaits `build_as_child_async`, keeping the task alive and adopting the result in `update_in`; a wait for the page shows a placeholder, and the raw HWND is copied into `window::ParentWindow` so the build can cross await points. `scripts/drive-webview-start.ps1` fails if a frame lands more than 150 ms after the build starts. See the trap above. |
+| R21 | **Starting the webview stalls the whole app.** `wry`'s synchronous build waits for WebView2 inside a nested Win32 message pump, so GPUI's loop, its executor and every frame freeze for the length of the wait (~350 ms here) — inside a click handler when the dock is opened, and inside the restore at startup. | The pane builds its page from a task that awaits `build_as_child_async`, keeping the task alive and adopting the result in `update_in`; a wait for the page shows a placeholder, and the raw HWND is copied into `window::ParentWindow` so the build can cross await points. A frame landing more than 150 ms after `webview build started` is the regression to look for in the startup marks. See the trap above. |
 | R22 | **A collapsed dock used to pay for its pane.** The restore called `ensure_active` for both docks, so a right dock restored closed still built the WebView2 — hundreds of milliseconds nothing on screen needed. | `SideView::ensure_active` returns early while the dock is closed, and `set_open` ensures the pane when the dock opens. The pane is built on the frame after the dock's chrome, never during it. |
 
-## Verifying UI changes
+## Verifying changes
 
-Unit tests cannot see layout. `scripts/` drives the real window through Win32
-input and writes screenshots to `%TEMP%\ll-shots`:
+`cargo test` is the check. The tests drive the seams directly — session codec,
+sniffing, path identity, tree rebuilds, watcher debounce, viewer scoring, tab
+replacement — so what they assert is the logic, not a replay of clicks. There is
+no scripted UI harness: mock clicks assert nothing the unit tests do not, and
+break on every layout change.
 
-```powershell
-pwsh -File scripts/drive-ui.ps1       # expand a folder, open a file
-pwsh -File scripts/drive-edit.ps1     # open, type, Ctrl+S, report the md5
-pwsh -File scripts/drive-session.ps1  # restart and check the layout came back
-pwsh -File scripts/drive-close.ps1    # dirty close prompt, Save, md5
-pwsh -File scripts/drive-strip.ps1    # a pane button toggles its dock
-pwsh -File scripts/drive-webview-hide.ps1  # the webview leaves with its dock
-pwsh -File scripts/drive-webview-start.ps1 # starting it does not stall a frame
-```
-
-Build first, then run them. They assert on file hashes where they can, so a
-silent no-op save is caught. Row positions in the scripts are pixel coordinates
-for the default 1216×768 window; if the layout changes, the clicks need
-updating — read the screenshots rather than trusting a green run.
-
-`drive-webview-start.ps1` is the exception to that: it reads the startup marks
-below instead of clicking, and fails when `first frame presented` lands more than
-150 ms after `webview build started`. A hung-window probe cannot see this,
-because wry's nested pump still dispatches window messages while it blocks every
-frame.
-
-Startup timing is logged, not benchmarked: `logging` marks `shell built`,
-`first draw`, `panes built` and `first frame presented` with milliseconds since
-`main` began, so a run says where the black window's time went (risk R19). The
-browser pane adds `webview build started` and `webview ready`, and
-`first frame presented` has to land between them — that is what
-`drive-webview-start.ps1` asserts. A session whose right dock is collapsed logs
-neither mark, because that dock builds nothing (risk R22). Run the binary and
-read stdout; `panes built` must land after `first draw`, or the deferred restore
-is back in front of the frame carrying the chrome. The sink is `simple_logger`,
-which also surfaces gpui's own records — its GPU and font lines, and the errors
-it used to swallow in `.log_err()`.
+What a unit test cannot see is a frame. Startup timing is logged, not
+benchmarked: `logging` marks `shell built`, `first draw`, `panes built` and
+`first frame presented` with milliseconds since `main` began, so a run says
+where the black window's time went (risk R19). The browser pane adds `webview
+build started` and `webview ready`, and `first frame presented` should land
+between them; a frame more than 150 ms after the build started is the stall risk
+R21 describes, which a window probe cannot see because wry's nested pump still
+dispatches window messages while it blocks every frame. A session whose right
+dock is collapsed logs neither page mark, because that dock builds nothing (risk
+R22). Run the binary and read stdout; `panes built` must land after `first
+draw`, or the deferred restore is back in front of the frame carrying the
+chrome. The sink is `simple_logger`, which also surfaces gpui's own records —
+its GPU and font lines, and the errors it used to swallow in `.log_err()`.
 
 To seed a session by hand:
 
@@ -500,8 +484,8 @@ $cfg = Join-Path $env:APPDATA 'lllearning'; New-Item -ItemType Directory -Force 
   Set-Content (Join-Path $cfg 'session.json') -Encoding UTF8
 ```
 
-Deleting `session.json` gives the fresh-start state (no folder open). That is
-the intended way to test the empty states.
+Deleting `session.json` gives the fresh-start state (no folder open), which is
+the way to see the empty states by hand.
 
 ## Style
 

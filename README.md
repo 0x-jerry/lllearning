@@ -55,17 +55,7 @@ what publishes, through
 | `lllearning-<version>-portable.zip` | the exe alone — nothing else is needed |
 
 The tag must be `v` + the version in `Cargo.toml` (`v0.1.0`), or the job stops
-before publishing. The exe embeds its own icon, both icon fonts, the start page
-and the theme assets, so the portable copy is one file; what it writes stays
-where it always does: `%APPDATA%\lllearning\session.json` and the WebView2
-profile beside the exe (so the folder must be writable, and never Program Files).
-
-| Keys | Action |
-| --- | --- |
-| `Ctrl+S` / `Cmd+S` | Save the active document |
-| `Enter` | Load the address in the browser bar, or the prompt's default button |
-| Right-click a tab | Close, Close All, Close Others |
-| `Escape` | Dismiss a prompt or a context menu |
+before publishing.
 
 ## Develop
 
@@ -95,4 +85,4 @@ time, so the binary does not carry a 1 MB font to paint thirteen icons. See
 `build/main.rs` for which glyphs it keeps and how it finds them.
 
 `AGENTS.md` carries the rest: the traps, the risk register, the session file and
-the `scripts/` UI drivers. Read it before changing code.
+the startup marks. Read it before changing code.
