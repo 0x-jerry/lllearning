@@ -1,38 +1,35 @@
 [package]
 name = "lllearning"
-version = "0.0.3"
+version = "0.0.4"
 edition = "2024"
 publish = false
 build = "build/main.rs"
+
+[package.metadata.packager]
+product-name = "lllearning"
+identifier = "com.example.lllearning"
+description = "GPUI Kit WebView browser with a system tray"
+category = "Utility"
+icons = ["assets/icon.png", "assets/icon.ico"]
+before-packaging-command = "cargo build --release"
 
 [features]
 inspector = []
 
 [build-dependencies]
-allsorts = { version = "0.17", default-features = false, features = ["flate2", "flate2_rust"] }
 embed-resource = "3.0"
 lucide-icons = "1.80"
 
+[build-dependencies.allsorts]
+version = "0.17"
+default-features = false
+features = ["flate2", "flate2_rust"]
+
 [dependencies]
-gpui = { package = "gpui-kit", version = "0.11.0", features = [
-    "gpui-fast",
-    "tree-sitter",
-    "tree-sitter-bash",
-    "tree-sitter-javascript",
-    "tree-sitter-markdown",
-    "tree-sitter-python",
-    "tree-sitter-rust",
-    "tree-sitter-toml",
-    "tree-sitter-typescript",
-    "tree-sitter-yaml",
-] }
 gpui-rsx = "0.13.0"
-gpui-webview = { version = "0.11.0", features = ["gpui-fast"] }
-wry = { version = "0.53.3", package = "lb-wry" }
 png = "0.18"
 tray-icon = "0.26"
 raw-window-handle = "0.6.2"
-serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 notify = "8"
 dirs = "6"
@@ -42,16 +39,26 @@ log = "0.4"
 simple_logger = "5"
 devicons = "0.6.13"
 
-[target.'cfg(target_os = "windows")'.dependencies]
-windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_WindowsAndMessaging"] }
+[dependencies.gpui]
+package = "gpui-kit"
+version = "0.11.0"
+features = ["gpui-fast", "tree-sitter", "tree-sitter-bash", "tree-sitter-javascript", "tree-sitter-markdown", "tree-sitter-python", "tree-sitter-rust", "tree-sitter-toml", "tree-sitter-typescript", "tree-sitter-yaml"]
 
-[package.metadata.packager]
-product-name = "lllearning"
-identifier = "com.example.lllearning"
-description = "GPUI Kit WebView browser with a system tray"
-category = "Utility"
-icons = ["assets/icon.png", "assets/icon.ico"]
-before-packaging-command = "cargo build --release"
+[dependencies.gpui-webview]
+version = "0.11.0"
+features = ["gpui-fast"]
+
+[dependencies.wry]
+version = "0.53.3"
+package = "lb-wry"
+
+[dependencies.serde]
+version = "1"
+features = ["derive"]
+
+[target."cfg(target_os = \"windows\")".dependencies.windows-sys]
+version = "0.61.2"
+features = ["Win32_Foundation", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_WindowsAndMessaging"]
 
 [profile.release]
 lto = "fat"
