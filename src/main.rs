@@ -10,6 +10,7 @@ use gpui::{WindowBounds, WindowOptions, px, size};
 mod app;
 mod documents;
 mod icons;
+mod logging;
 mod panes;
 mod state;
 mod tray;
@@ -17,6 +18,9 @@ mod window;
 mod workspace;
 
 fn main() {
+    // First, so the startup marks in `logging` time everything that follows.
+    logging::init();
+
     // Without this, the WebView2 child view does not render on Windows.
     #[cfg(target_os = "windows")]
     unsafe {

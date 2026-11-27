@@ -46,6 +46,12 @@ notify = "8"
 dirs = "6"
 lucide-icons = "1.80"
 ignore = "0.4"
+# Startup timing (`logging`): the facade the app writes through, and the sink it
+# installs once in `main`. `simple_logger`'s default is stdout — its `stderr`
+# feature is off on purpose, so a redirected run captures the marks and the
+# crash-report `eprintln!`s stay on separate streams.
+log = "0.4"
+simple_logger = "5"
 # File-type glyphs for the explorer, and the nerd font in `assets/` that draws
 # them. lucide has no per-language file icons.
 devicons = "0.6.13"

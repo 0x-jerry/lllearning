@@ -174,6 +174,10 @@ impl AppShell {
         // tray's Quit is what ends the app.
         crate::tray::keep_window_on_close(window, cx);
 
+        // The end of the window's build closure: the point after which only the
+        // first draw stands between the user and pixels (risk R19).
+        crate::logging::mark("shell built");
+
         shell
     }
 
@@ -440,6 +444,7 @@ impl AppShell {
                 for slot in PaneSlot::ALL {
                     this.side(slot, cx).ensure_active(window, cx);
                 }
+                crate::logging::mark("panes built");
                 cx.notify();
             });
         })
@@ -953,7 +958,9 @@ pub(crate) fn empty_state(title: &str, hint: &str, cx: &App) -> AnyElement {
 
 impl Render for AppShell {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let _ = window;
+        // Cheap after the first call; that one arms the first-paint mark.
+        crate::logging::arm_first_paint(window);
+
         // Widths first: reading them borrows the shell immutably, and `side`
         // below hands out a mutable borrow of the dock.
         let left_width = self.column_size(PaneSlot::Left, 0, LEFT_WIDTH, cx);

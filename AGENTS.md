@@ -60,6 +60,7 @@ src/panes/            side-pane seam: explorer, browser, outline
 src/documents/        document seam: text, markdown, image, video, refused, sniff
 src/workspace/        folder root, lazy tree, notify watcher, fs helpers
 src/state.rs          the session file
+src/logging.rs        the stderr log sink and the startup marks
 src/icons.rs          icon glyphs as text: lucide, and the nerd font for file types
 src/tray.rs           tray icon; hide-on-close
 src/window.rs         Win32 hide/show, and owning a prompt window to its caller
@@ -351,6 +352,14 @@ Build first, then run them. They assert on file hashes where they can, so a
 silent no-op save is caught. Row positions in the scripts are pixel coordinates
 for the default 1216×768 window; if the layout changes, the clicks need
 updating — read the screenshots rather than trusting a green run.
+
+Startup timing is logged, not benchmarked: `logging` marks `shell built`,
+`first draw`, `panes built` and `first frame presented` with milliseconds since
+`main` began, so a run says where the black window's time went (risk R19). Run
+the binary and read stdout; `panes built` must land after `first draw`, or the
+deferred restore is back in front of the frame carrying the chrome. The sink is
+`simple_logger`, which also surfaces gpui's own records — its GPU and font
+lines, and the errors it used to swallow in `.log_err()`.
 
 To seed a session by hand:
 
