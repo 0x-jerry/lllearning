@@ -474,6 +474,6 @@ The existing code is the style guide. In particular:
 - Do not renumber or rename a `PaneProvider::id` or a panel name — it is written
   into the session file, and renaming turns every saved layout into an
   "Unavailable" tab.
-- Do not edit `statics/` (the start page and URL reporter); they are embedded
-  with `include_str!` and are not part of the shell.
+- Do not edit `statics/` (the start page and the page setup script); they are
+  embedded with `include_str!` and are not part of the shell.
 - Do not commit `target/`, `node_modules/`, or a `session.json`.

@@ -15,8 +15,9 @@ use gpui::component::{
     input::{Input, InputEvent, InputState},
 };
 use gpui::{
-    App, AppContext as _, Context, Entity, FocusHandle, Focusable, IntoElement, ParentElement as _,
-    Render, SharedString, Styled as _, Subscription, Task, Window, div, px,
+    App, AppContext as _, Context, Entity, FocusHandle, Focusable, InteractiveElement as _,
+    IntoElement, ParentElement as _, Render, SharedString, Styled as _, Subscription, Task, Window,
+    div, px,
 };
 use gpui_rsx::rsx;
 use gpui_webview::WebView;
@@ -35,9 +36,13 @@ const START_PAGE_URL: &str = "about:blank";
 /// Prefix the injected script puts in front of the page URL it reports.
 const URL_MESSAGE_PREFIX: &str = "url:";
 
-/// Reports URL changes that load no new document, such as `#anchor` links and
-/// `history.pushState`, which the page load handler never sees.
-const URL_REPORTER_JS: &str = include_str!("../../statics/url-reporter.js");
+/// Runs in every page before its own scripts, and reports what GPUI cannot see:
+/// URL changes with no new document, and clicks (the page is a native child
+/// window, risk R1).
+const SETUP_JS: &str = include_str!("../../statics/setup.js");
+
+/// Prefix the click reporter puts in front of its message.
+const CLICK_MESSAGE_PREFIX: &str = "click:";
 
 /// Whether `url` is the start page rather than a real page.
 fn is_start_page(url: &str) -> bool {
@@ -50,6 +55,17 @@ enum WebViewEvent {
     Load { url: String, loading: bool },
     /// The page changed its own URL without loading a new document.
     Url(String),
+    /// Someone clicked in the page.
+    Click,
+}
+
+/// What a page message reports, read by the prefix its reporter put on it.
+fn reported_event(body: &str) -> Option<WebViewEvent> {
+    if body.starts_with(CLICK_MESSAGE_PREFIX) {
+        return Some(WebViewEvent::Click);
+    }
+    body.strip_prefix(URL_MESSAGE_PREFIX)
+        .map(|url| WebViewEvent::Url(url.to_owned()))
 }
 
 /// The native page, and what the pane knows about starting it.
@@ -186,11 +202,11 @@ impl BrowserView {
                 let _ = event_tx.try_send(WebViewEvent::Load { url, loading });
             })
             .with_ipc_handler(move |request| {
-                if let Some(url) = request.body().strip_prefix(URL_MESSAGE_PREFIX) {
-                    let _ = ipc_tx.try_send(WebViewEvent::Url(url.to_owned()));
+                if let Some(event) = reported_event(request.body()) {
+                    let _ = ipc_tx.try_send(event);
                 }
             })
-            .with_initialization_script(URL_REPORTER_JS)
+            .with_initialization_script(SETUP_JS)
             // Born hidden: only the element that places the page may show it,
             // and a build that fails or is cancelled must not paint an empty
             // native rectangle over the pane.
@@ -335,6 +351,10 @@ impl BrowserView {
     /// Reflect what the webview reports in the toolbar.
     fn webview_event(&mut self, event: WebViewEvent, window: &mut Window, cx: &mut Context<Self>) {
         let url = match event {
+            WebViewEvent::Click => {
+                self.blur_address(window, cx);
+                return;
+            }
             WebViewEvent::Load { url, loading } => {
                 if self.loading != loading {
                     self.loading = loading;
@@ -351,6 +371,13 @@ impl BrowserView {
             url
         };
         self.set_address(shown, window, cx);
+    }
+
+    /// Take the focus off the address bar, so typing goes back where it was.
+    fn blur_address(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.address.read(cx).focus_handle(cx).is_focused(window) {
+            window.blur(cx);
+        }
     }
 
     /// Show `url` in the address bar unless the user is editing it.
@@ -574,7 +601,12 @@ impl Render for BrowserView {
                             </Button>
                         }
                     }}
-                    <div class="flex-1 min-w-0">
+                    <div
+                        class="flex-1 min-w-0"
+                        on_mouse_down_out={cx.listener(|this, _, window, cx| {
+                            this.blur_address(window, cx)
+                        })}
+                    >
                         {Input::new(&self.address).small()}
                     </div>
                 </div>
@@ -657,6 +689,19 @@ mod tests {
         // with the error page. Only input with `://` bypasses the prefix.
         assert_eq!(resolve_address("hello world"), "https://hello world");
         assert_eq!(resolve_address(""), "");
+    }
+
+    #[test]
+    fn a_page_message_is_read_by_its_prefix() {
+        assert!(matches!(
+            reported_event("click:"),
+            Some(WebViewEvent::Click)
+        ));
+        assert!(matches!(
+            reported_event("url:https://a.b"),
+            Some(WebViewEvent::Url(url)) if url == "https://a.b"
+        ));
+        assert!(reported_event("hello").is_none());
     }
 
     #[test]
