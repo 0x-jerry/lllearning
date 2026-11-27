@@ -45,6 +45,7 @@ fn main() {
             if let Err(error) = tray::Tray::install(cx) {
                 eprintln!("failed to create the tray icon: {error}");
             }
+            logging::mark("fundation initialized");
 
             // The session is read before the window opens: the shell applies the
             // saved dock widths while it is constructed, so the first frame lays
@@ -61,6 +62,8 @@ fn main() {
             let opened = gpui::open_window(options, cx, |window, cx| {
                 app::shell::AppShell::new(session, window, cx)
             });
+
+            logging::mark("gpui window opened");
 
             let (_, shell) = match opened {
                 Ok(opened) => opened,

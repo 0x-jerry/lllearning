@@ -174,10 +174,6 @@ impl AppShell {
         // tray's Quit is what ends the app.
         crate::tray::keep_window_on_close(window, cx);
 
-        // The end of the window's build closure: the point after which only the
-        // first draw stands between the user and pixels (risk R19).
-        crate::logging::mark("shell built");
-
         shell
     }
 
